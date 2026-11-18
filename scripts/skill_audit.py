@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
-"""Automatisiertes Audit-Skript für KI-Skills, Wissensdatenbanken und Doku-Repos (v1.3-DE).
+"""Automatisiertes Audit-Skript für KI-Skills, Wissensdatenbanken und Doku-Repos (v1.4-DE).
 
 Misst und prüft:
 1. Datei-Inventar (Zeichen, ≈Tokens, Zeilen, max. Zeilenlänge, Überschriften, TOC, LaTeX-Dichte) + Bundle-Budget
 2. Abschnitts-Breakdown großer Dateien (>10k Tokens oder --sections)
-3. SKILL.md-Frontmatter (name, description <= 1024, DE/EN-Trigger & Zweisprachigkeit, YAML Flow-Multiline/Listen/Block-Scalars, file_names-Abgleich, version)
+3. SKILL.md-Frontmatter & agentskills.io-Spec (NFKC-name, compatibility, description <= 1024, DE/EN-Trigger, YAML Flow-Multiline/Listen/Block-Scalars, file_names-Abgleich, version)
 4. Markdown-Integrität: defekte relative Links (inkl. URL-Decoding, Klammern & Link-Titel), defekte #Anker, ungeschlossene Codeblöcke (auch vor Folgeböcken), Mermaid-Lint, Überlängen (>1500 Z.)
-5. Tote lokale Datei-/Skript-Verweise in Backticks (getrennt von Quell-Archiven, Systempfaden & Zielprojekt-Manifesten)
+5. Tote lokale Datei-/Skript-Verweise in Backticks & transitive Orphan-File-Erkennung (BFS ab SKILL.md)
 6. Format-Lint (fehlende Leerzeichen & Trailing Whitespace — Codeblöcke/Backticks/LaTeX maskiert!)
-7. Portabilität & Sandbox-Anti-Patterns (hardcoded Plattform-Pfade, sudo/apt-get in Shell-Blöcken)
-8. Datei-Duplikate (Hinweis auf doppelt gepflegte Gesamtausgaben)
-9. Repo-/Skill-Hygiene (Modus A vs. Modus B) inkl. __pycache__/Junk-Prüfung & erweitertem evals/cases.json-Schema
-10. Heuristik für Sicherheits-/Ethik-Schranke in SKILL.md + optionaler CI-Exit-Code (--fail-on p1|p2|p3)
+7. Portabilität, Sandbox-Anti-Patterns & Security (Unicode-Smuggling/Bidi-Overrides, AST-Skript-Security, Shell-Risiken & Hardcoded Secrets)
+8. Cross-Language-Contamination, README-Tier-/Workflow-Qualität & Datei-Duplikate
+9. Repo-/Skill-Hygiene (Modus A vs. Modus B) inkl. __pycache__/Junk-Prüfung & evals/cases.json (Schema + Negative-Trigger/Leakage-Lint)
+10. 25 stabile Regel-IDs (SV-P1-01…SV-P3-08), SARIF 2.1.0 Export (--sarif) & CI-Exit-Codes (--fail-on p1|p2|p3)
 
 Nutzung:
   python3 skill_audit.py <ziel-ordner>                  # Markdown-Report
   python3 skill_audit.py <ziel-ordner> --sections       # inkl. Abschnittsgrößen aller Dateien
   python3 skill_audit.py <ziel-ordner> --report-draft   # Vorbefüllter Entwurf nach BERICHT_VORLAGE.md
   python3 skill_audit.py <ziel-ordner> --fail-on p2     # CI-/Validator-Modus (Exit 1 ab P2-Befund)
-  python3 skill_audit.py <ziel-ordner> --json           # JSON-Ausgabe
-  python3 skill_audit.py --self-test                    # Erweiterter Selbsttest (25+ Prüfungen)
+  python3 skill_audit.py <ziel-ordner> --sarif          # SARIF 2.1.0 Ausgabe (GitHub Code Scanning)
+  python3 skill_audit.py <ziel-ordner> --json           # JSON-Ausgabe inkl. Regel-IDs
+  python3 skill_audit.py --rules                        # Alle 25 stabilen Regel-IDs anzeigen
+  python3 skill_audit.py --self-test                    # Erweiterter Selbsttest (v1.3 + v1.4)
 """
 
 from __future__ import annotations
@@ -34,6 +36,14 @@ import tempfile
 import urllib.parse
 
 sys.dont_write_bytecode = True
+
+_SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+import audit_quality  # noqa: E402
+import audit_sarif  # noqa: E402
+import audit_security  # noqa: E402
 
 # Dateien, deren Backtick-Verweise typischerweise externe Quelleninventare statt lokaler Tools sind
 ARCHIVE_FILE_RE = re.compile(r"(^|/)00_INDEX|KONTROLLLISTE|CHANGELOG|NOTICE", re.I)
@@ -794,10 +804,19 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
             "— Skripte direkt per Shell ausführen statt gemeinsam in den Kontext zu laden."
         )
 
-    # Frontmatter, file_names-Abgleich & safety heuristic on SKILL.md
+    # Frontmatter, file_names-Abgleich, agentskills.io-Spec, Contamination, Workflow & Safety
     skill_md = target / "SKILL.md"
     frontmatter_report: dict[str, object] = {"exists": skill_md.is_file()}
     frontmatter_file_names_issues: list[str] = []
+    spec_issues: list[dict[str, object]] = []
+    prose_workflow_issues: list[dict[str, object]] = []
+    contamination: dict[str, object] = {
+        "application_families": [],
+        "auxiliary_families": [],
+        "multi_interface_context": False,
+        "flagged": False,
+        "matched_multi_interface_tools": [],
+    }
     safety_present = False
     safety_note = "SKILL.md nicht vorhanden"
     if skill_md.is_file():
@@ -829,9 +848,20 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
             }
         )
         safety_present, safety_note = detect_safety_clause(s_text)
+        spec_issues = audit_quality.validate_agentskills_spec(fm, target)
+        skill_code_langs = [lang for lang, _, _ in iter_fenced_blocks(s_text) if lang]
+        contamination = audit_quality.analyze_contamination(str(fm.get("name", "")), s_text, skill_code_langs)
+        prose_workflow_issues = audit_quality.check_skill_prose_and_workflow(s_text)
 
-    # Evals schema & expected_modules validation
+    # Evals schema, expected_modules & v1.4 quality/leakage validation
     evals_issues = validate_evals(target, all_files, all_basenames)
+    evals_quality_issues = audit_quality.check_evals_quality(target / "evals" / "cases.json")
+
+    # v1.4 Security (Unicode smuggling, Bidi, AST script security, secrets) & Orphan files
+    sorted_all_files = sorted(all_files)
+    unicode_smuggling_issues = audit_security.scan_unicode_smuggling(target, sorted_all_files)
+    script_security_issues = audit_security.scan_script_security(target, sorted_all_files)
+    orphan_files = audit_quality.find_orphan_files(target, all_files, md_texts)
 
     # Hygiene (differentiated for Mode A: skill dir vs Mode B: git repo)
     hygiene: dict[str, bool] = {
@@ -855,7 +885,7 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
             }
         )
 
-    return {
+    report: dict[str, object] = {
         "target": str(target),
         "mode": "git-repo" if is_git_repo else "skill-folder",
         "summary": {
@@ -869,10 +899,17 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
             "total_latex_text_macros": total_latex_text,
             "dead_local_reference_count": len(dead_local_refs),
             "external_or_archive_reference_count": dead_external_refs_count,
+            "orphan_file_count": len(orphan_files),
             "broken_link_count": len(broken_links),
             "unclosed_code_blocks": unclosed_code_blocks,
             "mermaid_issue_count": len(mermaid_issues),
             "portability_and_sandbox_issue_count": len(portability_and_sandbox_issues),
+            "unicode_smuggling_issue_count": len(unicode_smuggling_issues),
+            "script_security_issue_count": len(script_security_issues),
+            "spec_issue_count": len(spec_issues),
+            "contamination_flagged": bool(contamination.get("flagged")),
+            "prose_workflow_issue_count": len(prose_workflow_issues),
+            "evals_quality_issue_count": len(evals_quality_issues),
             "long_line_count": len(long_lines),
             "format_issue_count": len(format_issues),
             "trailing_whitespace_lines": trailing_ws_count,
@@ -890,6 +927,13 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
         "broken_links": broken_links[:50],
         "mermaid_issues": mermaid_issues[:30],
         "portability_and_sandbox_issues": portability_and_sandbox_issues[:30],
+        "unicode_smuggling_issues": unicode_smuggling_issues[:50],
+        "script_security_issues": script_security_issues[:50],
+        "orphan_files": orphan_files[:50],
+        "spec_issues": spec_issues,
+        "contamination": contamination,
+        "prose_workflow_issues": prose_workflow_issues,
+        "evals_quality_issues": evals_quality_issues,
         "long_lines": long_lines,
         "dead_local_references": dead_local_refs,
         "format_issues": format_issues[:50],
@@ -900,6 +944,10 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
         "budget_warnings": budget_warnings,
         "hygiene": hygiene,
     }
+    findings = audit_sarif.extract_findings(report)
+    report["findings"] = findings
+    report["summary"]["finding_count"] = len(findings)  # type: ignore[index]
+    return report
 
 
 def evaluate_fail_on(report: dict[str, object], threshold: str) -> list[str]:
@@ -910,46 +958,72 @@ def evaluate_fail_on(report: dict[str, object], threshold: str) -> list[str]:
     fm = report["frontmatter"]
     reasons: list[str] = []
 
-    # P1: Struktur-/Ausführungsblocker (ungeschlossene Codeblöcke, ungültiges Evals-JSON, Sandbox-Anti-Patterns)
+    # P1: Struktur-/Sicherheits-/Ausführungsblocker
     if s["unclosed_code_blocks"]:
-        reasons.append(f"P1: Ungeschlossene Codeblöcke in {', '.join(s['unclosed_code_blocks'])}")
+        reasons.append(f"P1 [SV-P1-01]: Ungeschlossene Codeblöcke in {', '.join(s['unclosed_code_blocks'])}")
     if any("Ungültiges JSON" in str(ei) for ei in report["evals_issues"]):
-        reasons.append("P1: Ungültiges JSON in evals/cases.json")
+        reasons.append("P1 [SV-P1-02]: Ungültiges JSON in evals/cases.json")
     sandbox_hits = [x for x in report["portability_and_sandbox_issues"] if x["kind"] == "sandbox-anti-pattern"]
     if sandbox_hits:
-        reasons.append(f"P1: {len(sandbox_hits)} Sandbox-Anti-Pattern(s) (sudo/apt-get) in Shell-Blöcken")
+        reasons.append(f"P1 [SV-P1-03]: {len(sandbox_hits)} Sandbox-Anti-Pattern(s) (sudo/apt-get) in Shell-Blöcken")
+    uni_p1 = [x for x in report.get("unicode_smuggling_issues", []) if x.get("severity") == "p1"]
+    if uni_p1:
+        reasons.append(f"P1 [SV-P1-04]: {len(uni_p1)} Unicode-Tag-Smuggling-/Bidi-Override-Befund(e)")
+    sec_p1 = [x for x in report.get("script_security_issues", []) if x.get("severity") == "p1"]
+    if sec_p1:
+        reasons.append(f"P1 [SV-P1-05/06]: {len(sec_p1)} kritische Skript-Security-/Secret-Befund(e)")
     if threshold == "p1":
         return reasons
 
-    # P2: Defekte Links, tote lokale Verweise, Format-Lint, Mermaid-Lint, Evals-Schema, Junk, file_names
+    # P2: Defekte Links, tote Verweise, Orphan-Files, Format-/Mermaid-Lint, Evals-Schema, Spec, Junk, Zero-Width/Pickle
     if s["broken_link_count"]:
-        reasons.append(f"P2: {s['broken_link_count']} defekte Links/Anker")
+        reasons.append(f"P2 [SV-P2-01]: {s['broken_link_count']} defekte Links/Anker")
     if s["dead_local_reference_count"]:
-        reasons.append(f"P2: {s['dead_local_reference_count']} tote lokale Verweise")
+        reasons.append(f"P2 [SV-P2-02]: {s['dead_local_reference_count']} tote lokale Verweise")
+    if s.get("orphan_file_count"):
+        reasons.append(f"P2 [SV-P2-03]: {s['orphan_file_count']} verwaiste Datei(en) (Orphan-Files)")
     if s["format_issue_count"]:
-        reasons.append(f"P2: {s['format_issue_count']} Formatierungsfehler")
+        reasons.append(f"P2 [SV-P2-04]: {s['format_issue_count']} Formatierungsfehler")
     if s["mermaid_issue_count"]:
-        reasons.append(f"P2: {s['mermaid_issue_count']} Mermaid-Lint-Befunde")
+        reasons.append(f"P2 [SV-P2-05]: {s['mermaid_issue_count']} Mermaid-Lint-Befunde")
     if s["evals_issue_count"]:
-        reasons.append(f"P2: {s['evals_issue_count']} Eval-Schema-Fehler")
+        reasons.append(f"P2 [SV-P2-06]: {s['evals_issue_count']} Eval-Schema-Fehler")
     if s["frontmatter_file_names_issue_count"]:
-        reasons.append(f"P2: {s['frontmatter_file_names_issue_count']} fehlerhafte Frontmatter-file_names")
+        reasons.append(f"P2 [SV-P2-07]: {s['frontmatter_file_names_issue_count']} fehlerhafte Frontmatter-file_names")
     if s["junk_file_count"]:
-        reasons.append(f"P2: {s['junk_file_count']} Bytecode-/Junk-Dateien (__pycache__/.pyc/.DS_Store)")
+        reasons.append(f"P2 [SV-P2-08]: {s['junk_file_count']} Bytecode-/Junk-Dateien (__pycache__/.pyc/.DS_Store)")
+    spec_p2 = [x for x in report.get("spec_issues", []) if x.get("severity") == "p2"]
+    if spec_p2:
+        reasons.append(f"P2 [SV-P2-09]: {len(spec_p2)} agentskills.io-Spec-Fehler")
+    uni_p2 = [x for x in report.get("unicode_smuggling_issues", []) if x.get("severity") == "p2"]
+    if uni_p2:
+        reasons.append(f"P2 [SV-P2-10]: {len(uni_p2)} unsichtbare Zero-Width-/Steuerzeichen")
+    sec_p2 = [x for x in report.get("script_security_issues", []) if x.get("severity") == "p2"]
+    if sec_p2:
+        reasons.append(f"P2 [SV-P2-11]: {len(sec_p2)} unsichere Deserialisierungs-Aufrufe (pickle/marshal)")
     if threshold == "p2":
         return reasons
 
-    # P3: Frontmatter-Limits/Trigger, Hardcoded-Pfade, Budget-Warnungen
+    # P3: Frontmatter-Limits/Trigger, Hardcoded-Pfade, Budget-Warnungen, Spec-Advisories, Contamination, Workflow, Eval-Qualität
     if fm.get("exists"):
         if not fm.get("description_within_1024"):
-            reasons.append("P3: SKILL.md description fehlt oder > 1024 Zeichen")
+            reasons.append("P3 [SV-P3-01]: SKILL.md description fehlt oder > 1024 Zeichen")
         if not fm.get("bilingual_en_trigger"):
-            reasons.append("P3: Englischer Trigger in SKILL.md description fehlt")
+            reasons.append("P3 [SV-P3-02]: Englischer Trigger in SKILL.md description fehlt")
     path_hits = [x for x in report["portability_and_sandbox_issues"] if x["kind"] == "hardcoded-platform-path"]
     if path_hits:
-        reasons.append(f"P3: {len(path_hits)} hardcoded Plattform-Pfade")
+        reasons.append(f"P3 [SV-P3-03]: {len(path_hits)} hardcoded Plattform-Pfade")
     if s["budget_warning_count"]:
-        reasons.append(f"P3: {s['budget_warning_count']} Budget-/TOC-Warnungen")
+        reasons.append(f"P3 [SV-P3-04]: {s['budget_warning_count']} Budget-/TOC-Warnungen")
+    spec_p3 = [x for x in report.get("spec_issues", []) if x.get("severity") == "p3"]
+    if spec_p3:
+        reasons.append(f"P3 [SV-P3-05]: {len(spec_p3)} agentskills.io-Spec-Hinweis(e)")
+    if s.get("contamination_flagged"):
+        reasons.append("P3 [SV-P3-06]: Cross-Language-Contamination in SKILL.md erkannt")
+    if s.get("prose_workflow_issue_count"):
+        reasons.append(f"P3 [SV-P3-07]: {s['prose_workflow_issue_count']} README-Tier-/Workflow-Hinweis(e) in SKILL.md")
+    if s.get("evals_quality_issue_count"):
+        reasons.append(f"P3 [SV-P3-08]: {s['evals_quality_issue_count']} Eval-Qualitäts-/Leakage-Hinweis(e)")
     return reasons
 
 
@@ -1016,18 +1090,23 @@ def render_markdown(report: dict[str, object]) -> str:
     else:
         lines.append("- ✅ Keine Mermaid-Syntax-Probleme gefunden.")
 
-    lines.extend(["", "## 4. Tote lokale Datei-/Skript-Verweise in Backticks", ""])
+    lines.extend(["", "## 4. Tote lokale Datei-/Skript-Verweise & verwaiste Dateien (Orphans)", ""])
     if report["dead_local_references"]:
         for d in report["dead_local_references"]:
-            lines.append(f"- `{d['reference']}` (erwähnt in: {', '.join(d['mentioned_in'])})")
+            lines.append(f"- ❌ Toter Verweis: `{d['reference']}` (erwähnt in: {', '.join(d['mentioned_in'])})")
     else:
         lines.append("- ✅ Keine toten lokalen Datei-Verweise gefunden.")
+    if report.get("orphan_files"):
+        for of in report["orphan_files"]:
+            lines.append(f"- ❌ Verwaiste Datei (`SV-P2-03`): `{of['file']}` ({of['message']})")
+    else:
+        lines.append("- ✅ Keine verwaisten Dateien (Orphan-Files) in `scripts/`/`references/`/`assets/`.")
     if s["external_or_archive_reference_count"]:
         lines.append(
             f"- ℹ️ Zusätzlich {s['external_or_archive_reference_count']} externe/Zielprojekt-/Quell-Archiv-Pfade ausgeblendet."
         )
 
-    lines.extend(["", "## 5. Format-Lint, Portabilität & Sandbox-Checks", ""])
+    lines.extend(["", "## 5. Format-Lint, Portabilität, Sandbox & Security", ""])
     if report["format_issues"]:
         for fi in report["format_issues"]:
             lines.append(f"- `{fi['file']}:{fi['line']}` [{fi['kind']}]: `{fi['snippet']}`")
@@ -1038,11 +1117,44 @@ def render_markdown(report: dict[str, object]) -> str:
             lines.append(f"- ⚠️ `{ps['file']}:{ps['line']}` [{ps['kind']}]: `{ps['snippet']}`")
     else:
         lines.append("- ✅ Keine hardcoded Plattform-Pfade oder Sandbox-Anti-Patterns (`sudo`/`apt-get`) gefunden.")
+    if report.get("unicode_smuggling_issues"):
+        for ui in report["unicode_smuggling_issues"]:
+            lines.append(
+                f"- ❌ Unicode `{ui['file']}:{ui['line']}` [{ui['severity'].upper()} / {ui['kind']}]: "
+                f"{ui['codepoint']} ({ui['name']}) — `{ui['snippet']}`"
+            )
+    else:
+        lines.append("- ✅ Keine Unicode-Smuggling-, Bidi-Override- oder Zero-Width-Zeichen gefunden.")
+    if report.get("script_security_issues"):
+        for si in report["script_security_issues"]:
+            lines.append(
+                f"- ❌ Security `{si['file']}:{si['line']}` [{si['severity'].upper()} / {si['kind']}]: "
+                f"{si['message']} (`{si['snippet']}`)"
+            )
+    else:
+        lines.append("- ✅ Keine AST-Skript-Risiken, gefährlichen Shell-Muster oder Hardcoded Secrets gefunden.")
     if report["long_lines"]:
         for ll in report["long_lines"][:10]:
             lines.append(f"- ℹ️ Überlange Zeile (>1.500 Z.): `{ll['file']}:{ll['line']}` ({ll['length']:,} Zeichen)")
 
-    lines.extend(["", "## 6. Duplikat-Paare (≥5 identische lange Zeilen)", ""])
+    lines.extend(["", "## 6. Spec, Qualität, Contamination & Duplikate", ""])
+    if report.get("spec_issues"):
+        for spi in report["spec_issues"]:
+            icon = "❌" if spi.get("severity") == "p2" else "⚠️"
+            lines.append(f"- {icon} `agentskills.io` [{spi['severity'].upper()} / {spi['kind']}]: {spi['message']}")
+    else:
+        lines.append("- ✅ `agentskills.io`-Spec-Prüfung (Name, Kompatibilität, Felder) ohne Befund.")
+    cont = report.get("contamination") or {}
+    if cont.get("flagged"):
+        fams = ", ".join(cont.get("application_families", []))
+        lines.append(f"- ⚠️ Cross-Language-Contamination (`SV-P3-06`): mehrere unverbundene Sprachfamilien in `SKILL.md` ({fams}).")
+    else:
+        lines.append("- ✅ Keine Cross-Language-Contamination in `SKILL.md`.")
+    if report.get("prose_workflow_issues"):
+        for pwi in report["prose_workflow_issues"]:
+            lines.append(f"- ⚠️ SKILL-Qualität [{pwi['kind']}]: {pwi['message']}")
+    else:
+        lines.append("- ✅ Keine README-Tier-Sektionen oder fehlenden Verifikationshinweise in `SKILL.md`.")
     if report["duplicate_pairs"]:
         for dp in report["duplicate_pairs"]:
             lines.append(
@@ -1060,6 +1172,8 @@ def render_markdown(report: dict[str, object]) -> str:
         lines.append(f"- ❌ {fni}")
     for ei in report["evals_issues"]:
         lines.append(f"- ❌ {ei}")
+    for eqi in report.get("evals_quality_issues", []):
+        lines.append(f"- ⚠️ Eval-Qualität [{eqi['kind']}]: {eqi['message']}")
 
     return "\n".join(lines) + "\n"
 
@@ -1071,13 +1185,16 @@ def render_report_draft(report: dict[str, object]) -> str:
     s = report["summary"]
     ver = fm.get("version") or "?"
     unclosed_n = len(s["unclosed_code_blocks"])
+    sec_n = int(s.get("unicode_smuggling_issue_count", 0)) + int(s.get("script_security_issue_count", 0))
+    orphan_n = int(s.get("orphan_file_count", 0))
     safety_suffix = "" if s["safety_clause_present"] else " *(nur bei sicherheitskritischen Domänen erforderlich)*"
     lines = [
         f"# Verbesserungsanalyse: `{name}` (v{ver})",
         "",
-        f"**Fazit:** <Kurzurteil ergänzen>. Automatisch gefunden: **{s['broken_link_count']} kaputte Links/Anker**, "
-        f"**{unclosed_n} ungeschlossene Codeblöcke**, **{s['mermaid_issue_count']} Mermaid-Befunde**, "
-        f"**{s['format_issue_count']} Formatierungsfehler** und **{s['dead_local_reference_count']} tote lokale Verweise** "
+        f"**Fazit:** <Kurzurteil ergänzen>. Automatisch gefunden: **{sec_n} Security-/Unicode-Befunde**, "
+        f"**{s['broken_link_count']} kaputte Links/Anker**, **{unclosed_n} ungeschlossene Codeblöcke**, "
+        f"**{s['mermaid_issue_count']} Mermaid-Befunde**, **{s['format_issue_count']} Formatierungsfehler**, "
+        f"**{s['dead_local_reference_count']} tote lokale Verweise** und **{orphan_n} verwaiste Dateien** "
         f"(MD ≈ {s['total_approx_tokens']:,} Tokens, Bundle {s['bundle_total_bytes']:,} Bytes). Fachliche Prüfung (P1) siehe unten.",
         "",
         "## Bestandsaufnahme (Größe ≈ Tokens)",
@@ -1104,22 +1221,32 @@ def render_report_draft(report: dict[str, object]) -> str:
             "",
             "---",
             "",
-            "## 🔴 Priorität 1: Fachliche Fehler & Bugs (manuell verifiziert)",
+            "## 🔴 Priorität 1: Fachliche Fehler, Bugs & Security (verifiziert)",
             "",
             "| # | Fundstelle | Problem | Korrektur |",
             "|---|---|---|---|",
         ]
     )
+    p1_rows: list[str] = []
     sandbox_hits = [x for x in report["portability_and_sandbox_issues"] if x["kind"] == "sandbox-anti-pattern"]
-    if sandbox_hits:
-        for idx, sh in enumerate(sandbox_hits, 1):
-            lines.append(
-                f"| F{idx} | `{sh['file']}:{sh['line']}` | Sandbox-Anti-Pattern (`{sh['snippet']}`) | Auf User-Space-Tool (`uv`/`venv`/`npm`) umstellen |"
-            )
+    for sh in sandbox_hits:
+        p1_rows.append(
+            f"| F{len(p1_rows) + 1} | `{sh['file']}:{sh['line']}` | Sandbox-Anti-Pattern (`{sh['snippet']}`) | Auf User-Space-Tool (`uv`/`venv`/`npm`) umstellen |"
+        )
+    for ui in [x for x in report.get("unicode_smuggling_issues", []) if x.get("severity") == "p1"]:
+        p1_rows.append(
+            f"| F{len(p1_rows) + 1} | `{ui['file']}:{ui['line']}` | Unicode-Smuggling `{ui['codepoint']}` ({ui['kind']}) | Unsichtbare Steuer-/Bidi-Zeichen entfernen |"
+        )
+    for si in [x for x in report.get("script_security_issues", []) if x.get("severity") == "p1"]:
+        p1_rows.append(
+            f"| F{len(p1_rows) + 1} | `{si['file']}:{si['line']}` | Security `{si['kind']}`: {si['message']} | Sichere Alternative verwenden oder Secret entfernen |"
+        )
+    if p1_rows:
+        lines.extend(p1_rows)
     else:
         lines.append("| F1 | `<datei>#L<z>` | <verifizierter Befund> | <konkrete Korrektur> |")
 
-    lines.extend(["", "## 🟠 Priorität 2: Ausführbarkeit, Links & Formatierung"])
+    lines.extend(["", "## 🟠 Priorität 2: Ausführbarkeit, Links, Orphans & Formatierung"])
     for bl in report["broken_links"]:
         lines.append(f"- Defekter Link: `{bl['file']}:{bl['line']}` → `{bl['link']}` ({bl['reason']})")
     if s["unclosed_code_blocks"]:
@@ -1131,6 +1258,14 @@ def render_report_draft(report: dict[str, object]) -> str:
     if report["dead_local_references"]:
         refs = ", ".join(f"`{d['reference']}`" for d in report["dead_local_references"])
         lines.append(f"- Tote lokale Verweise: {refs}")
+    for of in report.get("orphan_files", []):
+        lines.append(f"- Verwaiste Datei (Orphan): `{of['file']}`")
+    for spi in [x for x in report.get("spec_issues", []) if x.get("severity") == "p2"]:
+        lines.append(f"- `agentskills.io`-Spec [{spi['kind']}]: {spi['message']}")
+    for ui in [x for x in report.get("unicode_smuggling_issues", []) if x.get("severity") == "p2"]:
+        lines.append(f"- Unsichtbares Unicode-Zeichen `{ui['file']}:{ui['line']}`: {ui['codepoint']} ({ui['name']})")
+    for si in [x for x in report.get("script_security_issues", []) if x.get("severity") == "p2"]:
+        lines.append(f"- Skript-Deserialisierung `{si['file']}:{si['line']}`: {si['message']}")
     for fni in report["frontmatter_file_names_issues"]:
         lines.append(f"- Frontmatter `file_names`: {fni}")
     if report["junk_files"]:
@@ -1141,10 +1276,14 @@ def render_report_draft(report: dict[str, object]) -> str:
         or report["mermaid_issues"]
         or report["format_issues"]
         or report["dead_local_references"]
+        or report.get("orphan_files")
+        or any(x.get("severity") == "p2" for x in report.get("spec_issues", []))
+        or any(x.get("severity") == "p2" for x in report.get("unicode_smuggling_issues", []))
+        or any(x.get("severity") == "p2" for x in report.get("script_security_issues", []))
         or report["frontmatter_file_names_issues"]
         or report["junk_files"]
     ):
-        lines.append("- ✅ Automatisch keine Link-, Codeblock-, Mermaid-, Format-, Verweis- oder Junk-Fehler gefunden.")
+        lines.append("- ✅ Automatisch keine Link-, Codeblock-, Mermaid-, Format-, Verweis-, Orphan-, Spec- oder Junk-Fehler gefunden.")
 
     lines.extend(
         [
@@ -1159,6 +1298,13 @@ def render_report_draft(report: dict[str, object]) -> str:
         lines.append(f"- Budget-Hinweis: {bw}")
     for ph in [x for x in report["portability_and_sandbox_issues"] if x["kind"] == "hardcoded-platform-path"]:
         lines.append(f"- Hardcoded Plattform-Pfad `{ph['file']}:{ph['line']}`: `{ph['snippet']}`")
+    for spi in [x for x in report.get("spec_issues", []) if x.get("severity") == "p3"]:
+        lines.append(f"- `agentskills.io`-Spec-Hinweis [{spi['kind']}]: {spi['message']}")
+    if (report.get("contamination") or {}).get("flagged"):
+        fams = ", ".join(report["contamination"].get("application_families", []))  # type: ignore[union-attr]
+        lines.append(f"- Cross-Language-Contamination in `SKILL.md`: {fams}")
+    for pwi in report.get("prose_workflow_issues", []):
+        lines.append(f"- SKILL-Qualität [{pwi['kind']}]: {pwi['message']}")
     if report["duplicate_pairs"]:
         for dp in report["duplicate_pairs"]:
             lines.append(
@@ -1186,6 +1332,8 @@ def render_report_draft(report: dict[str, object]) -> str:
         lines.append(f"| `{k}` | {'✅ vorhanden' if v else '❌ fehlt/fehlerhaft'} |")
     for ei in report["evals_issues"]:
         lines.append(f"- ❌ Eval-Problem: {ei}")
+    for eqi in report.get("evals_quality_issues", []):
+        lines.append(f"- ⚠️ Eval-Qualität [{eqi['kind']}]: {eqi['message']}")
 
     lines.extend(
         [
@@ -1341,6 +1489,10 @@ def run_self_test() -> int:
         assert s["evals_issue_count"] == 3, f"P4 Regression: {rep['evals_issues']}"
         assert rep["hygiene"]["evals/"] is False
 
+        # v1.4: Orphan-File-Erkennung in Basis-Fixture (references/copy.md ist unverlinkt)
+        orphan_paths = {o["file"] for o in rep["orphan_files"]}
+        assert "references/copy.md" in orphan_paths, f"v1.4 Orphan Regression: {rep['orphan_files']}"
+
         # F4: report draft includes all sections
         draft = render_report_draft(rep)
         assert "| Datei | Zeichen | ≈ Tokens | Zeilen | TOC |" in draft
@@ -1350,14 +1502,115 @@ def run_self_test() -> int:
         assert "Duplikat-Verdacht" in draft
         assert "```mermaid" in draft
 
-    print("OK: skill_audit.py Selbsttest (alle 25+ Regressionstests F1–F5, B1–B6, L1–L3, P2–P4) bestanden.")
+    # v1.4 End-to-End Integrationstest (Security, Spec, Contamination, Workflow, Evals-Quality, SARIF)
+    with tempfile.TemporaryDirectory() as tmp2:
+        root2 = pathlib.Path(tmp2)
+        bidi_char = chr(0x202E)
+        zw_char = chr(0x200B)
+        (root2 / "SKILL.md").write_text(
+            "---\n"
+            "name: Bad--Name\n"
+            "description: Test skill for integration. Use when testing v1.4 rules.\n"
+            "custom_extra: true\n"
+            "---\n"
+            "# Bad Skill\n\n"
+            "## Installation\n\n"
+            "Run `scripts/tool.py`.\n\n"
+            "### Step 1\nDo A.\n\n"
+            "### Step 2\nDo B.\n\n"
+            "### Step 3\nDo C.\n\n"
+            f"Hidden bidi {bidi_char} and zero-width {zw_char} test.\n\n"
+            "```python\nprint('py')\n```\n"
+            "```javascript\nconsole.log('js')\n```\n"
+            "```rust\nfn main() {}\n```\n",
+            encoding="utf-8",
+        )
+        (root2 / "scripts").mkdir()
+        (root2 / "scripts" / "tool.py").write_text(
+            "import subprocess\n"
+            "x = " + "ev" + "al('1+1')\n"
+            "subprocess.run('ls', shell=True)\n"
+            "tok = '" + "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'\n",
+            encoding="utf-8",
+        )
+        (root2 / "scripts" / "unused_helper.py").write_text("print('orphan')\n", encoding="utf-8")
+        (root2 / "evals").mkdir()
+        (root2 / "evals" / "cases.json").write_text(
+            json.dumps(
+                {
+                    "skill_name": "Bad--Name",
+                    "cases": [
+                        {
+                            "id": "e1",
+                            "prompt": "Check alpha_keyword and beta_keyword please",
+                            "expected_modules": ["SKILL.md"],
+                            "must_contain": ["alpha_keyword", "beta_keyword"],
+                        },
+                        {
+                            "id": "e2",
+                            "prompt": "Another positive test case",
+                            "expected_modules": ["SKILL.md"],
+                            "must_contain": ["something"],
+                        },
+                        {
+                            "id": "e3",
+                            "prompt": "Third positive test case",
+                            "expected_modules": ["SKILL.md"],
+                            "must_contain": ["another"],
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        rep2 = audit_directory(root2)
+        s2 = rep2["summary"]
+        assert s2["unicode_smuggling_issue_count"] >= 2, f"v1.4 Unicode E2E failed: {rep2['unicode_smuggling_issues']}"
+        assert s2["script_security_issue_count"] >= 3, f"v1.4 Security E2E failed: {rep2['script_security_issues']}"
+        assert any(o["file"] == "scripts/unused_helper.py" for o in rep2["orphan_files"]), rep2["orphan_files"]
+        assert any(sp["kind"] == "spec-invalid-name" for sp in rep2["spec_issues"]), rep2["spec_issues"]
+        assert s2["contamination_flagged"] is True, rep2["contamination"]
+        pw_kinds = {x["kind"] for x in rep2["prose_workflow_issues"]}
+        assert "readme-tier-in-skill" in pw_kinds and "workflow-missing-verification" in pw_kinds, pw_kinds
+        eq_kinds = {x["kind"] for x in rep2["evals_quality_issues"]}
+        assert "eval-no-negative-case" in eq_kinds and "eval-prompt-leakage" in eq_kinds, eq_kinds
+
+        # Fail-on P1/P2/P3 & SARIF 2.1.0
+        assert len(evaluate_fail_on(rep2, "p1")) >= 2
+        assert len(evaluate_fail_on(rep2, "p2")) >= 5
+        assert len(evaluate_fail_on(rep2, "p3")) >= 8
+        sarif = audit_sarif.render_sarif(rep2, tool_version="1.4-DE")
+        assert sarif["version"] == "2.1.0"
+        rule_ids = {r["ruleId"] for r in sarif["runs"][0]["results"]}
+        for expected_rid in ("SV-P1-04", "SV-P1-05", "SV-P1-06", "SV-P2-03", "SV-P2-09", "SV-P3-06", "SV-P3-07", "SV-P3-08"):
+            assert expected_rid in rule_ids, f"SARIF missing {expected_rid}: {rule_ids}"
+
+    print("OK: skill_audit.py Selbsttest (alle 35+ Regressionstests v1.3 + v1.4 inkl. Security, Orphans, Spec, SARIF) bestanden.")
     return 0
 
 
+def render_rules_table() -> str:
+    """Gibt alle stabilen Regel-IDs (SV-P1-01 … SV-P3-08) als Markdown-Tabelle aus."""
+    lines = [
+        "# Stabile Audit-Regeln (`skill-verbesserungsanalyse` v1.4-DE)",
+        "",
+        "| Regel-ID | Prio | SARIF-Level | Kategorie | Beschreibung |",
+        "|---|:---:|:---:|---|---|",
+    ]
+    for rid, meta in audit_sarif.RULES.items():
+        lines.append(
+            f"| `{rid}` | {meta['priority']} | `{meta['level']}` | `{meta['category']}` | {meta['short_description']} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Automatisiertes Audit fuer KI-Skills & Wissens-Repos (v1.3)")
+    parser = argparse.ArgumentParser(description="Automatisiertes Audit fuer KI-Skills & Wissens-Repos (v1.4-DE)")
     parser.add_argument("target", nargs="?", default=".", help="Zielordner des Skills oder Repos")
-    parser.add_argument("--json", action="store_true", help="Ausgabe als JSON statt Markdown")
+    parser.add_argument("--json", action="store_true", help="Ausgabe als JSON statt Markdown (inkl. Regel-IDs)")
+    parser.add_argument("--sarif", action="store_true", help="Ausgabe als SARIF 2.1.0 JSON (GitHub Code Scanning)")
+    parser.add_argument("--rules", action="store_true", help="Alle stabilen Regel-IDs (SV-P1-01...) anzeigen")
     parser.add_argument("--sections", action="store_true", help="Abschnitts-Breakdown fuer alle Markdown-Dateien")
     parser.add_argument("--report-draft", action="store_true", help="Vorbefuellten Bericht nach BERICHT_VORLAGE ausgeben")
     parser.add_argument(
@@ -1371,6 +1624,9 @@ def main() -> int:
 
     if args.self_test:
         return run_self_test()
+    if args.rules:
+        print(render_rules_table(), end="")
+        return 0
 
     target_path = pathlib.Path(args.target)
     if not target_path.is_dir():
@@ -1378,7 +1634,9 @@ def main() -> int:
         return 1
 
     report = audit_directory(target_path, include_all_sections=args.sections)
-    if args.json:
+    if args.sarif:
+        print(json.dumps(audit_sarif.render_sarif(report, tool_version="1.4-DE"), ensure_ascii=False, indent=2))
+    elif args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     elif args.report_draft:
         print(render_report_draft(report))

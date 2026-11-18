@@ -22,6 +22,21 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python3 scripts/add_toc.py --self-test
 
+      - name: Run audit_security.py self-test
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 scripts/audit_security.py --self-test
+
+      - name: Run audit_quality.py self-test
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 scripts/audit_quality.py --self-test
+
+      - name: Run audit_sarif.py self-test
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 scripts/audit_sarif.py --self-test
+
       - name: Run skill_audit.py self-test
         env:
           PYTHONDONTWRITEBYTECODE: "1"
@@ -31,3 +46,10 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python3 scripts/skill_audit.py . --fail-on p2
+
+      - name: Validate SARIF 2.1.0 export
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 scripts/skill_audit.py . --sarif > /tmp/audit.sarif
+          python3 -c 'import json; d=json.load(open("/tmp/audit.sarif")); assert d["version"]=="2.1.0" and len(d["runs"][0]["tool"]["driver"]["rules"])>=25 and len(d["runs"][0]["results"])==0, d["runs"][0]["results"]; print("OK: SARIF 2.1.0 valid, 0 findings.")'

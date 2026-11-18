@@ -2,6 +2,17 @@
 
 Alle nennenswerten Änderungen an `skill-verbesserungsanalyse` werden hier dokumentiert.
 
+## [1.4-DE] – 2026-11-18
+
+### Hinzugefügt (P1–P4)
+- **Unicode-Smuggling & Bidi-Trojan-Source (`CVE-2021-42574`):** Erkennung versteckter Zero-Width-, Tag- und bidirektionaler Steuerzeichen in Markdown, Frontmatter und Skripten (P1).
+- **AST-Skript-Sicherheit & Hardcoded Secrets:** Statische Sicherheitsprüfung von Python- und Shell-Skripten (`eval`, `exec`, `shell=True`, Credential-Zugriff, `curl | sh`) sowie Suche nach fest einprogrammierten Secrets (P1).
+- **Orphan-Files & Multi-Step-Workflow-Qualität:** Erkennung verwaister Dateien in `scripts/`, `references/` und `assets/` sowie Prüfkriterien für Exit-Bedingungen pro Schritt, Retry-Limit + Fallback bei Schleifen und beobachtbare Trigger (P2).
+- **`agentskills.io`-Spec-Konformität:** Validierung von `name` (≤ 64 Zeichen, Kleinbuchstaben/Ziffern/Bindestriche, kein `--`) und `compatibility` (≤ 500 Zeichen) (P2/P3).
+- **Contamination- & Struktur-Checks:** Warnung vor README-Tier-Sektionen in `SKILL.md` (`Installation`, `License`, `Contributing`) und Cross-Language-Contamination (P3).
+- **Stabile Regel-IDs & SARIF-Export:** Eindeutige Regel-IDs (`SV-P1-01`…) und `--sarif`-Ausgabe für GitHub Code Scanning / PR-Annotationen (P4).
+- **Negative-Trigger-Coverage & Leakage-Lint:** Prüfung von `evals/cases.json` auf `should_trigger: false`-Fälle und Prompt-Leakage, zwei neue Eval-Fälle (`eval-09-out-of-scope-no-trigger`, `eval-10-security-orphan-sarif`) sowie Open-Source-Referenzen in `NOTICE.md` (P4).
+
 ## [1.3-DE] – 2026-11-18
 
 ### Behoben (P1/P2)

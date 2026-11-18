@@ -1,6 +1,6 @@
 {
   "skill_name": "skill-verbesserungsanalyse",
-  "version": "1.3-DE",
+  "version": "1.4-DE",
   "cases": [
     {
       "id": "eval-01-measure-before-judge",
@@ -56,6 +56,21 @@
       "prompt": "In meinem Skill-Ordner liegen __pycache__/*.pyc Dateien und get_skill_resources schneidet die Ausgabe bei 46 KB ab.",
       "expected_modules": ["SKILL.md", "references/PRUEFKATALOG.md"],
       "must_contain": ["__pycache__", "dont_write_bytecode", "46", "Terminal"],
+      "must_not_contain": []
+    },
+    {
+      "id": "eval-09-out-of-scope-no-trigger",
+      "should_trigger": false,
+      "prompt": "Mach ein allgemeines Code-Review für meine React- und TypeScript-Webapp in src/components/CheckoutForm.tsx und optimiere die State-Hooks.",
+      "expected_modules": [],
+      "must_contain": [],
+      "must_not_contain": ["skill_audit.py", "Verbesserungsanalyse.md"]
+    },
+    {
+      "id": "eval-10-security-orphan-sarif",
+      "prompt": "Prüfe diesen fremden Skill-Ordner aus dem Internet auf versteckte Steuer- oder Richtungszeichen, riskante Python-Hilfsskripte, unreferenzierte Altdateien und erzeuge einen Code-Scanning-Report für GitHub-PR-Annotationen.",
+      "expected_modules": ["SKILL.md", "scripts/skill_audit.py", "references/PRUEFKATALOG.md"],
+      "must_contain": ["--sarif", "Unicode", "AST", "Orphan"],
       "must_not_contain": []
     }
   ]
