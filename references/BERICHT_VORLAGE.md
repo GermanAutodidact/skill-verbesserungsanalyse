@@ -2,6 +2,12 @@
 
 **Fazit:** <Gesamturteil in 1–2 Sätzen>. Gefunden: **<n> bestätigte P1-Fehler/Bugs**, **<m> Link-/Format-/Tool-Befunde (P2)** und <größtes Struktur-/Effizienzpotenzial>.
 
+## Zweck, Scope & Ziel-Domäne (verifiziert vor Architektur-Bewertung)
+- **Skill / Modus:** `<name>` (`skill-folder` / `git-repo`) | **Domäne:** `<Fach-/Wissens- | Coding-/DevOps- | Workflow-/Prompt-Skill>`
+- **Erklärter Zweck (`description`):** <Kurzfassung direkt aus `SKILL.md`>
+- **Explizite Abgrenzung (`Don't use`):** <vorhanden: … / fehlt>
+- **Purpose-vs.-Architektur-Abgleich:** <Stimmen Beschreibung, Body & Skripte überein?>
+
 ## Bestandsaufnahme (Größe ≈ Tokens)
 
 | Datei | Zeichen | ≈ Tokens | Zeilen | TOC |

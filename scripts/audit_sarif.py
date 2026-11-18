@@ -309,6 +309,17 @@ RULES: dict[str, dict[str, str]] = {
         ),
         "category": "evals",
     },
+    "SV-P3-09": {
+        "priority": "P3",
+        "level": "note",
+        "name": "PurposeAlignmentAdvisory",
+        "short_description": "Purpose-vs-architecture alignment advisory in SKILL.md",
+        "full_description": (
+            "SKILL.md description lacks an explicit negative scope boundary (e.g. 'Don't use for ...') "
+            "or advertises bundled scripts that are missing from scripts/."
+        ),
+        "category": "purpose",
+    },
 }
 
 _BACKTICK_FILE_RE = re.compile(r"^`([^`]+)`")
@@ -796,6 +807,18 @@ def extract_findings(report: dict[str, object]) -> list[dict[str, object]]:
                 _make_finding("SV-P3-08", "evals/cases.json", None, entry, default_file="evals/cases.json")
             )
 
+    # --- SV-P3-09: Purpose-vs-architecture alignment advisories ---
+    purpose_raw = report.get("purpose_issues")
+    if purpose_raw is None and isinstance(report.get("purpose"), dict):
+        purpose_raw = report["purpose"].get("issues", [])  # type: ignore[union-attr]
+    for entry in _iter_list(purpose_raw):
+        if isinstance(entry, dict):
+            fpath = entry.get("file", "SKILL.md")
+            msg = _extract_item_message(entry, RULES["SV-P3-09"]["short_description"])
+            p3_findings.append(_make_finding("SV-P3-09", fpath, entry.get("line"), msg))
+        elif isinstance(entry, str) and entry.strip():
+            p3_findings.append(_make_finding("SV-P3-09", "SKILL.md", None, entry))
+
     return p1_findings + p2_findings + p3_findings
 
 
@@ -805,7 +828,7 @@ def _to_artifact_uri(file_path: str) -> str:
     return urllib.parse.quote(norm, safe="/:@-._~!$&'()*+,;=")
 
 
-def render_sarif(report: dict[str, object], tool_version: str = "1.4-DE") -> dict[str, object]:
+def render_sarif(report: dict[str, object], tool_version: str = "1.4.1-DE") -> dict[str, object]:
     """Renders an ``audit_directory()`` report dict as a SARIF 2.1.0 dictionary."""
     findings = extract_findings(report)
 
@@ -1005,6 +1028,14 @@ def _build_mock_report() -> dict[str, object]:
                 "message": "`cases.json` enthält 3 Testfälle, aber keinen Negative-Trigger-Fall.",
             },
         ],
+        "purpose_issues": [
+            {
+                "file": "SKILL.md",
+                "severity": "p3",
+                "kind": "purpose-missing-negative-boundary",
+                "message": "`SKILL.md`-`description` fehlt eine explizite Negativ-Abgrenzung (`Don't use`).",
+            },
+        ],
     }
 
 
@@ -1020,7 +1051,7 @@ def run_self_test() -> int:
     expected_rule_ids = {
         *(f"SV-P1-0{i}" for i in range(1, 7)),
         *(f"SV-P2-{i:02d}" for i in range(1, 12)),
-        *(f"SV-P3-0{i}" for i in range(1, 9)),
+        *(f"SV-P3-0{i}" for i in range(1, 10)),
     }
     check(set(RULES.keys()) == expected_rule_ids, f"RULES keys mismatch: {set(RULES.keys()) ^ expected_rule_ids}")
     for rid, meta in RULES.items():
@@ -1148,8 +1179,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--tool-version",
-        default="1.4-DE",
-        help="Tool-Version für SARIF tool.driver.version (Standard: 1.4-DE).",
+        default="1.4.1-DE",
+        help="Tool-Version für SARIF tool.driver.version (Standard: 1.4.1-DE).",
     )
     parser.add_argument(
         "--output",

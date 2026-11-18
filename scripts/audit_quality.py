@@ -729,6 +729,96 @@ def check_evals_quality(cases_path: pathlib.Path) -> list[dict[str, object]]:
     return findings
 
 
+_POSITIVE_TRIGGER_RE = re.compile(
+    r"\b(use when|use whenever|use after|use for|use this skill|use to|trigger|verwenden wenn|nutzen wenn|anwenden wenn)\b",
+    re.I,
+)
+_NEGATIVE_BOUNDARY_RE = re.compile(
+    r"(don't use|do not use|not for|not intended for|avoid for|unrelated to|nicht verwenden|nicht für|nicht geeignet für|außerhalb von)",
+    re.I,
+)
+_DESC_BUNDLED_SCRIPT_RE = re.compile(
+    r"(\b[a-zA-Z0-9_-]+\.(?:py|sh)\b|bundled scripts?|mitgelieferte[ns]?\s+skript)",
+    re.I,
+)
+_DOMAIN_HINTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("fach-wissens-skill", re.compile(r"\b(synthese|chemie|reaktion|spektroskopie|medizin|recht|physik|mathematik|wissensdatenbank|handbuch|norm)\b", re.I)),
+    ("workflow-prompt-skill", re.compile(r"\b(audit|review|verbesserungsanalyse|workflow|prompt|prompts|skill|skills|subagent|orchestrat|bericht|checkliste)\b", re.I)),
+    ("coding-devops-skill", re.compile(r"\b(ci/cd|github actions|docker|kubernetes|repo|monorepo|lint|refactor|typescript|python|git|build|test|deployment|api)\b", re.I)),
+)
+
+
+def check_purpose_alignment(
+    fm: dict[str, object],
+    skill_text: str,
+    all_files: set[str],
+) -> dict[str, object]:
+    """Erfasst Zweck, Scope & Ziel-Domäne aus SKILL.md und prüft Konsistenz mit der Architektur."""
+    name = str(fm.get("name", "") or "").strip()
+    desc = str(fm.get("description", "") or "").strip()
+    has_pos = bool(_POSITIVE_TRIGGER_RE.search(desc))
+    neg_match = _NEGATIVE_BOUNDARY_RE.search(desc)
+    has_neg = bool(neg_match)
+    neg_excerpt = ""
+    positive_desc = desc
+    if neg_match:
+        neg_excerpt = desc[neg_match.start() : min(len(desc), neg_match.start() + 140)].strip()
+        positive_desc = desc[: neg_match.start()]
+
+    header_text = f"{name}\n{positive_desc}"
+    body_text = skill_text[:1500]
+    inferred_domain = "allgemein"
+    best_score = 0
+    for dom_label, dom_re in _DOMAIN_HINTS:
+        score = 2 * len(dom_re.findall(header_text)) + len(dom_re.findall(body_text))
+        if score > best_score:
+            best_score = score
+            inferred_domain = dom_label
+
+    has_scripts = any(
+        f.startswith("scripts/") and pathlib.Path(f).suffix.lower() in {".py", ".sh", ".bash", ".js", ".ts"}
+        for f in all_files
+    )
+
+    issues: list[dict[str, object]] = []
+    if len(desc) >= 80 and has_pos and not has_neg:
+        issues.append(
+            {
+                "file": "SKILL.md",
+                "severity": "p3",
+                "kind": "purpose-missing-negative-boundary",
+                "message": (
+                    "`SKILL.md`-`description` enthält Positiv-Trigger, aber keine explizite Negativ-Abgrenzung "
+                    "(z. B. `Don't use for ...` / `Nicht verwenden für ...`) — erhöht das Risiko für Fehl-Trigger "
+                    "und unpassende Architektur-Annahmen."
+                ),
+            }
+        )
+    if _DESC_BUNDLED_SCRIPT_RE.search(desc) and not has_scripts:
+        issues.append(
+            {
+                "file": "SKILL.md",
+                "severity": "p3",
+                "kind": "purpose-script-mismatch",
+                "message": (
+                    "`SKILL.md`-`description` kündigt ein konkretes/mitgeliefertes Skript an, "
+                    "im Ordner `scripts/` existiert jedoch keine ausführbare Skriptdatei."
+                ),
+            }
+        )
+
+    return {
+        "name": name,
+        "description": desc,
+        "has_positive_trigger": has_pos,
+        "has_negative_boundary": has_neg,
+        "negative_boundary_excerpt": neg_excerpt,
+        "inferred_domain": inferred_domain,
+        "has_bundled_scripts": has_scripts,
+        "issues": issues,
+    }
+
+
 def run_self_test() -> int:
     """Führt umfassende Selbsttests für alle 5 öffentlichen Qualitätsprüfungen aus."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -1002,7 +1092,39 @@ def run_self_test() -> int:
             )
             assert check_evals_quality(evals_ok) == [], f"neg_case={neg_case}"
 
-    print("OK: audit_quality.py Selbsttest (alle 5 Module inkl. Edge-Cases) bestanden.")
+        # --- 6. check_purpose_alignment ---
+        p_ok = check_purpose_alignment(
+            {
+                "name": "skill-audit",
+                "description": (
+                    "Strukturierte Prüfung für KI-Skills mit Skript-Unterstützung. "
+                    "Use when auditing a SKILL.md. Don't use for unrelated app code reviews."
+                ),
+            },
+            "# Audit\nRun `scripts/check.py`.",
+            {"SKILL.md", "scripts/check.py"},
+        )
+        assert p_ok["has_positive_trigger"] is True
+        assert p_ok["has_negative_boundary"] is True
+        assert p_ok["inferred_domain"] == "workflow-prompt-skill", p_ok
+        assert p_ok["issues"] == [], p_ok
+
+        p_bad = check_purpose_alignment(
+            {
+                "name": "mega-helper",
+                "description": (
+                    "Ausführlicher automatischer Validator mit helper.py für alle denkbaren Aufgaben im Projekt. "
+                    "Use when running checks on any repository or documentation folder."
+                ),
+            },
+            "# Mega Helper\nNo scripts bundled.",
+            {"SKILL.md"},
+        )
+        p_bad_kinds = {x["kind"] for x in p_bad["issues"]}
+        assert "purpose-missing-negative-boundary" in p_bad_kinds, p_bad
+        assert "purpose-script-mismatch" in p_bad_kinds, p_bad
+
+    print("OK: audit_quality.py Selbsttest (alle 6 Module inkl. Zweck-Abgleich & Edge-Cases) bestanden.")
     return 0
 
 

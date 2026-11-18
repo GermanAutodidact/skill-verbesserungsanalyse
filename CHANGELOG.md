@@ -2,6 +2,13 @@
 
 Alle nennenswerten Änderungen an `skill-verbesserungsanalyse` werden hier dokumentiert.
 
+## [1.4.1-DE] – 2026-11-18
+
+### Hinzugefügt (Zweck-vor-Architektur-Gate)
+- **Zweck-, Scope- & Architektur-Abgleich:** Neues Pflicht-Gate in `SKILL.md` (Grundregel 1 + Phase 1), neuer Vorab-Block `0` in `references/PRUEFKATALOG.md` und Pflicht-Kopfblock `## Zweck, Scope & Ziel-Domäne` in `references/BERICHT_VORLAGE.md` sowie `--report-draft`, damit das Analyse-System zuerst Zweck, Beschreibung (`Use when` / `Don't use`) und Ziel-Domäne verifiziert, bevor es die technische Architektur bewertet.
+- **Automatisierter Purpose-Alignment-Check (`SV-P3-09`):** `scripts/audit_quality.py` (`check_purpose_alignment()`) erkennt fehlende Negativ-Abgrenzungen (`Don't use`) bei breiten Beschreibungen sowie Diskrepanzen zwischen in `description` versprochenen Skripten und fehlendem `scripts/`-Ordner; als 26. stabile Regel in `scripts/audit_sarif.py` (`SV-P3-09`) integriert.
+- **Neuer Eval-Fall:** `eval-11-purpose-before-architecture` in `evals/cases.json` (11 Szenarien).
+
 ## [1.4-DE] – 2026-11-18
 
 ### Hinzugefügt (P1–P4)

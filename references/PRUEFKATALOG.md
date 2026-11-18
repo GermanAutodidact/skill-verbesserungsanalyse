@@ -1,6 +1,11 @@
-# Prüfkatalog für die Verbesserungsanalyse (v1.4-DE)
+# Prüfkatalog für die Verbesserungsanalyse (v1.4.1-DE)
 
 Jeden Punkt mit **Beleg** (Datei:Zeile, grep-Treffer oder Messwert) bewerten: ✅ ok | ⚠️ verbesserbar | ❌ Fehler.
+
+## 0. Zweck-, Scope- & Architektur-Abgleich (Pflicht-Gate vor P1–P4)
+- [ ] **Zweck & Ziel-Domäne korrekt erfasst:** `name`, `description` (Trigger + `Don't use`-Abgrenzung), Skill-Typ (Fach-/Wissens-, Coding-/DevOps- oder Workflow-/Prompt-Skill) und Zielplattform aus `SKILL.md` belegt, **bevor** Architektur-Empfehlungen formuliert werden.
+- [ ] **Purpose-vs.-Architektur-Konsistenz:** Deckt sich die `description` mit den tatsächlich umgesetzten Workflows, Referenzen und `scripts/` (kein *Scope-Drift* — weder ungedeckte Versprechen noch ungetriggerte Kernfunktionen)?
+- [ ] **Passung geplanter Empfehlungen:** Widerspricht keine geplante Maßnahme (z. B. Split, CI, Ethik-Schranke, Skript-Ergänzung) dem erklärten Zweck oder der expliziten `Don't use`-Grenze des Skills?
 
 ## A. Fachliche Korrektheit, Sicherheit & technische Ausführbarkeit (→ P1)
 - [ ] **Plausibilität & Korrektheit nach Skill-Typ:**

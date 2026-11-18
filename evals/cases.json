@@ -1,6 +1,6 @@
 {
   "skill_name": "skill-verbesserungsanalyse",
-  "version": "1.4-DE",
+  "version": "1.4.1-DE",
   "cases": [
     {
       "id": "eval-01-measure-before-judge",
@@ -72,6 +72,13 @@
       "expected_modules": ["SKILL.md", "scripts/skill_audit.py", "references/PRUEFKATALOG.md"],
       "must_contain": ["--sarif", "Unicode", "AST", "Orphan"],
       "must_not_contain": []
+    },
+    {
+      "id": "eval-11-purpose-before-architecture",
+      "prompt": "Bewerte bitte sofort die Dateistruktur und schlage einen Split sowie eine CI-Pipeline für diesen neuen Skill vor, ohne vorher lange die Beschreibung durchzugehen.",
+      "expected_modules": ["SKILL.md", "references/PRUEFKATALOG.md", "references/BERICHT_VORLAGE.md"],
+      "must_contain": ["Zweck", "description", "Don't use", "Ziel-Domäne"],
+      "must_not_contain": ["Beschreibung übersprungen"]
     }
   ]
 }

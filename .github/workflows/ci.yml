@@ -52,4 +52,4 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 scripts/skill_audit.py . --sarif > /tmp/audit.sarif
-          python3 -c 'import json; d=json.load(open("/tmp/audit.sarif")); assert d["version"]=="2.1.0" and len(d["runs"][0]["tool"]["driver"]["rules"])>=25 and len(d["runs"][0]["results"])==0, d["runs"][0]["results"]; print("OK: SARIF 2.1.0 valid, 0 findings.")'
+          python3 -c 'import json; d=json.load(open("/tmp/audit.sarif")); assert d["version"]=="2.1.0" and len(d["runs"][0]["tool"]["driver"]["rules"])>=26 and len(d["runs"][0]["results"])==0, d["runs"][0]["results"]; print("OK: SARIF 2.1.0 valid, 0 findings.")'

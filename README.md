@@ -1,4 +1,4 @@
-# `skill-verbesserungsanalyse` (v1.4-DE)
+# `skill-verbesserungsanalyse` (v1.4.1-DE)
 
 Strukturierte **Verbesserungsanalyse (Audit → Bericht → Umsetzung)** als portabler KI-Skill für **KI-Skills (`SKILL.md`), Prompts, Wissensdatenbanken und Dokumentations-Repos** — vollständig **Zero-Dependency** (Python 3.10+ Standardbibliothek).
 
@@ -6,6 +6,7 @@ Das Paket kombiniert das deterministische Audit-Skript ([`scripts/skill_audit.py
 
 ## Kernfunktionen
 
+- **Zweck-vor-Architektur-Gate:** Erfasst und verifiziert zuerst Zweck, Beschreibung (`Use when` / `Don't use`) und Ziel-Domäne direkt aus `SKILL.md` (inkl. Purpose-vs.-Architektur-Check `SV-P3-09`), bevor technische Architektur-Empfehlungen ausgesprochen werden.
 - **Erst messen, dann urteilen:** Vollautomatische Bestandsaufnahme von Zeichen, ≈ Tokens, Bundle-Größe, Abschnittsgrößen (`--sections`) und LaTeX-Dichte.
 - **Sicherheit & Integrität ([`scripts/audit_security.py`](scripts/audit_security.py)):**
   - **Unicode-Smuggling & Bidi-Trojan-Source (`CVE-2021-42574`):** Erkennt Unicode-Tags (`U+E0000–U+E007F`), Bidi-Overrides, Zero-Width-Zeichen & unsichtbare Steuerzeichen.
@@ -13,13 +14,13 @@ Das Paket kombiniert das deterministische Audit-Skript ([`scripts/skill_audit.py
 - **Spec-, Struktur- & Qualitäts-Checks ([`scripts/audit_quality.py`](scripts/audit_quality.py)):**
   - **Transitive Orphan-File-Erkennung (BFS ab `SKILL.md`):** Meldet unreferenzierte Dateien in `scripts/`, `references/` und `assets/` (folgt auch Python-Imports transitiv).
   - **`agentskills.io`-Spec-Validierung:** NFKC-`name` (≤ 64 Zeichen, Kleinbuchstaben/Ziffern/Bindestriche, kein `--`, Ordner-Abgleich), `compatibility` (≤ 500 Zeichen) & Hinweis auf Nicht-Standard-Felder.
-  - **Cross-Language-Contamination & Workflow-Qualität:** Erkennt unverbundene Programmiersprachen-Familien in `SKILL.md`, README-Tier-Sektionen in `SKILL.md` sowie Multi-Step-Workflows ohne Verifikations-/Exit-Hinweise.
+  - **Cross-Language-Contamination, Purpose-Alignment & Workflow-Qualität:** Erkennt unverbundene Programmiersprachen-Familien in `SKILL.md`, fehlende `Don't use`-Abgrenzungen / Skript-Drift, README-Tier-Sektionen in `SKILL.md` sowie Multi-Step-Workflows ohne Verifikations-/Exit-Hinweise.
   - **Eval-Qualität & Leakage-Lint:** Prüft `evals/cases.json` auf Negative-Trigger-Abdeckung (`should_trigger: false`) und Prompt-Leakage.
 - **Markdown-, Link-, Format- & Hygiene-Lint ([`scripts/skill_audit.py`](scripts/skill_audit.py)):**
   - YAML-Frontmatter-Parser (CRLF, Flow-Multiline, Block-Scalars `>`/`|`, Inline-/Block-Listen, `file_names`-Abgleich, ≤ 1.024 Zeichen, DE+EN-Trigger).
   - Relative Markdown-Links & `#Anker`, ungeschlossene Codeblöcke, Mermaid-Syntax-Lint, tote lokale Verweise, Format-Lint, Sandbox-Anti-Patterns (`sudo`/`apt-get`), Duplikate & `__pycache__`-Hygiene.
-- **25 stabile Regel-IDs & SARIF 2.1.0 ([`scripts/audit_sarif.py`](scripts/audit_sarif.py)):**
-  - Einheitliche Regel-IDs (`SV-P1-01` … `SV-P3-08`), `--rules`-Übersicht, `--sarif`-Export für GitHub Code Scanning / PR-Annotationen und `--fail-on p1|p2|p3` für CI-Gates.
+- **26 stabile Regel-IDs & SARIF 2.1.0 ([`scripts/audit_sarif.py`](scripts/audit_sarif.py)):**
+  - Einheitliche Regel-IDs (`SV-P1-01` … `SV-P3-09`), `--rules`-Übersicht, `--sarif`-Export für GitHub Code Scanning / PR-Annotationen und `--fail-on p1|p2|p3` für CI-Gates.
 - **Idempotentes Inhaltsverzeichnis ([`scripts/add_toc.py`](scripts/add_toc.py)):** Erzeugt und aktualisiert `<!-- TOC_START -->`…`<!-- TOC_END -->` mit Zeilenbereichen, schützt Codeblöcke und unterstützt `--check` für CI.
 - **Anti-Over-Engineering:** Proportionale Empfehlungen — kleine Skills (< 15k Tokens, 1–3 Dateien) werden nicht unnötig aufgesplittet.
 
@@ -73,15 +74,15 @@ python3 scripts/skill_audit.py . --fail-on p2
 
 | Pfad | Zweck |
 |---|---|
-| [`SKILL.md`](SKILL.md) | Kern-Workflow (Phasen 1–5), Grundregeln & Priorisierungs-Matrix (P1–P4) |
-| [`references/PRUEFKATALOG.md`](references/PRUEFKATALOG.md) | Qualitativer Prüfkatalog (Kategorien A–G) |
+| [`SKILL.md`](SKILL.md) | Kern-Workflow (Phasen 1–5), Zweck-Gate, Grundregeln & Priorisierungs-Matrix (P1–P4) |
+| [`references/PRUEFKATALOG.md`](references/PRUEFKATALOG.md) | Qualitativer Prüfkatalog (Vorab-Gate 0 + Kategorien A–G) |
 | [`references/BERICHT_VORLAGE.md`](references/BERICHT_VORLAGE.md) | Standardisierte Vorlage für Verbesserungsanalyse-Berichte |
 | [`scripts/skill_audit.py`](scripts/skill_audit.py) | Haupt-CLI, Orchestrierung, Markdown/JSON/SARIF-Ausgabe & CI-Validator |
 | [`scripts/audit_security.py`](scripts/audit_security.py) | Unicode-Smuggling-, Bidi-, AST-Skript-Security- & Secret-Scanner |
-| [`scripts/audit_quality.py`](scripts/audit_quality.py) | BFS-Orphan-Erkennung, `agentskills.io`-Spec, Contamination, Workflow- & Eval-Lint |
-| [`scripts/audit_sarif.py`](scripts/audit_sarif.py) | Stabile Regel-Registry (`SV-P1-01`…`SV-P3-08`) & SARIF-2.1.0-Exporter |
+| [`scripts/audit_quality.py`](scripts/audit_quality.py) | Purpose-Abgleich, BFS-Orphans, `agentskills.io`-Spec, Contamination, Workflow- & Eval-Lint |
+| [`scripts/audit_sarif.py`](scripts/audit_sarif.py) | Stabile Regel-Registry (`SV-P1-01`…`SV-P3-09`) & SARIF-2.1.0-Exporter |
 | [`scripts/add_toc.py`](scripts/add_toc.py) | Idempotenter TOC- & Anker-Generator (`--check`, `--self-test`) |
-| [`evals/cases.json`](evals/cases.json) | Evaluierungs- & Regressionsfälle (10 Szenarien inkl. Negative-Trigger) |
+| [`evals/cases.json`](evals/cases.json) | Evaluierungs- & Regressionsfälle (11 Szenarien inkl. Negative-Trigger & Zweck-Gate) |
 
 ## Lizenz
 

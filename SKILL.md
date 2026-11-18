@@ -2,7 +2,7 @@
 name: skill-verbesserungsanalyse
 description: Strukturierte Verbesserungsanalyse (Audit) für KI-Skills, Wissensdatenbanken und Doku-Repos – automatische Bestandsaufnahme (Token-Budget, Abschnittsgrößen, Links/Anker, tote Verweise, Format-Lint), fachliche Prüfung, priorisierter Bericht (P1–P4) und verifizierte Umsetzung nach Freigabe. Use when the user asks to review, audit, improve or "verbessern/überprüfen/optimieren" a skill, SKILL.md, prompt, knowledge base or docs repo ("Ist das noch verbesserbar?", "Skill überprüfen", "Verbesserungsanalyse", "improvement review"). Don't use for general application code reviews unrelated to skills/prompts/docs.
 metadata:
-    version: 1.4-DE
+    version: 1.4.1-DE
 ---
 # Skill-Verbesserungsanalyse (Audit → Bericht → Umsetzung)
 
@@ -10,10 +10,11 @@ Systematisches Vorgehen für eine **belegbare Verbesserungsanalyse** von KI-Skil
 
 > [!IMPORTANT]
 > **Grundregeln:**
-> 1. **Erst messen, dann urteilen** — jeder Befund braucht einen Beleg (Datei:Zeile, grep-Treffer, Regel-ID oder Messwert).
-> 2. **Jeden Verdacht vorab verifizieren** (`grep`/`view_file`), inklusive Kopien/Gesamtausgaben.
-> 3. **Nichts ändern vor Freigabe** des Berichts; Inhalte stets **verlustfrei** erhalten.
-> 4. **Größen-Proportionalität (kein Over-Engineering):** Kleine Skills (< 15k Tokens, 1–3 Dateien) brauchen keinen Split, keinen Handbuch-Generator und kein künstliches TOC.
+> 1. **Erst Zweck & Scope erfassen, dann Architektur bewerten** — `name`, `description` (`Use when` / `Don't use`), Ziel-Domäne und Zielplattform direkt aus `SKILL.md` belegen, bevor Struktur- oder Architektur-Empfehlungen ausgesprochen werden.
+> 2. **Erst messen, dann urteilen** — jeder Befund braucht einen Beleg (Datei:Zeile, grep-Treffer, Regel-ID oder Messwert).
+> 3. **Jeden Verdacht vorab verifizieren** (`grep`/`view_file`), inklusive Kopien/Gesamtausgaben.
+> 4. **Nichts ändern vor Freigabe** des Berichts; Inhalte stets **verlustfrei** erhalten.
+> 5. **Größen-Proportionalität (kein Over-Engineering):** Kleine Skills (< 15k Tokens, 1–3 Dateien) brauchen keinen Split, keinen Handbuch-Generator und kein künstliches TOC.
 
 ---
 
@@ -23,14 +24,15 @@ Systematisches Vorgehen für eine **belegbare Verbesserungsanalyse** von KI-Skil
 |---|---|---|
 | **🔴 P1** | Sachlich falsch, gefährlich oder kaputter Code/Befehl | Physikalische/fachliche Fehler, Bugs in Skripten, kaputte CLI-Flags, `sudo`/`apt-get` in Sandbox-Skills, Unicode-Tag-Smuggling / Bidi-Overrides (`CVE-2021-42574`), AST-Skript-Risiken (`eval`/`exec`/`shell=True`/Credential-Zugriff/`curl \| sh`), Hardcoded Secrets |
 | **🟠 P2** | Blockiert KI-Ausführung oder beschädigt Lesbarkeit/Links | Tote lokale Tool-/Datei-Verweise, verwaiste Dateien (Orphan-Files in `scripts/`/`references/`/`assets/`), defekte Links/`#Anker`, ungeschlossene Codeblöcke, Mermaid-Syntaxfehler, Format-Lint, `agentskills.io`-Spec-Fehler, Zero-Width-Zeichen, `__pycache__`/`.pyc`-Junk |
-| **🟡 P3** | Effizienz, Kontext-Budget & Plattform-Tauglichkeit | Große ungeteilte Dateien (> 40k Tokens), Dopplungen, fehlende DE/EN-Trigger, hardcoded Pfade, Bundle > 46 KB, Cross-Language-Contamination, README-Tier-Sektionen oder fehlende Verifikation in Multi-Step-Workflows, fehlende Negative-Trigger-Evals / Prompt-Leakage, fehlende Ethik-Schranke |
+| **🟡 P3** | Effizienz, Kontext-Budget & Plattform-Tauglichkeit | Purpose-vs.-Architektur-Drift (fehlende `Don't use`-Abgrenzung, versprochene Skripte fehlen), große ungeteilte Dateien (> 40k Tokens), Dopplungen, fehlende DE/EN-Trigger, hardcoded Pfade, Bundle > 46 KB, Cross-Language-Contamination, README-Tier-Sektionen oder fehlende Verifikation in Multi-Step-Workflows, fehlende Negative-Trigger-Evals / Prompt-Leakage, fehlende Ethik-Schranke |
 | **🔵 P4** | Nachhaltige Qualitätssicherung & Hygiene | `evals/cases.json` inkl. Negative-Trigger, ausgebaute Selbsttests, CI-Validator (`--fail-on`, `--sarif`), `LICENSE`/`NOTICE.md`/`CHANGELOG.md` |
 
 ---
 
-## Phase 1 – Ziel-Modus & automatische Bestandsaufnahme
+## Phase 1 – Zweck, Ziel-Modus & automatische Bestandsaufnahme
 
-1. **Ziel und Modus klären:**
+1. **Zweck, Ziel-Domäne & Modus zuerst verifizieren (Pflicht-Gate vor Architektur-Kritik):**
+   - `SKILL.md`-Frontmatter (`name`, `description`, `Use when` / `Don't use`) und den Einstieg lesen und in 2–3 Sätzen festhalten: *Wofür ist der Skill gedacht? Was schließt er explizit aus? Welcher Skill-Typ liegt vor (Fach-/Wissens-, Coding-/DevOps- oder Workflow-/Prompt-Skill)?*
    - **Modus A (Skill-Ordner ohne Git):** z. B. `~/.gemini/skills/<name>/` oder `~/.claude/skills/<name>/`.
    - **Modus B (Git-Repository + ggf. installierter Skill):** Repo-Checkout **und** installierte Skill-Kopie notieren (beide bleiben synchron).
 2. **Audit-Skript direkt im Terminal ausführen** (`<skill-dir>/scripts/skill_audit.py`; je nach Plattform unter `~/.gemini/skills/skill-verbesserungsanalyse/scripts/` oder `~/.claude/skills/…` — Skripte **nicht** zusammen mit Referenzen über `get_skill_resources` laden, um das 46-KB-Limit nicht zu reißen; per `get_skill_resources` nur `references/PRUEFKATALOG.md` und `references/BERICHT_VORLAGE.md` holen):
@@ -41,14 +43,14 @@ Systematisches Vorgehen für eine **belegbare Verbesserungsanalyse** von KI-Skil
    python3 <skill-dir>/scripts/skill_audit.py <ziel-ordner> --fail-on p2     # CI-/Validator-Modus (Exit 1 ab P2)
    python3 <skill-dir>/scripts/skill_audit.py <ziel-ordner> --sarif          # SARIF 2.1.0 für GitHub Code Scanning
    python3 <skill-dir>/scripts/skill_audit.py <ziel-ordner> --json           # Maschinenlesbar inkl. Regel-IDs
-   python3 <skill-dir>/scripts/skill_audit.py --rules                        # Alle 25 stabilen Regel-IDs (SV-P1-01…)
+   python3 <skill-dir>/scripts/skill_audit.py --rules                        # Alle 26 stabilen Regel-IDs (SV-P1-01…)
    ```
-   Prüft automatisch (über `skill_audit.py` + Hilfsmodule `audit_security.py`, `audit_quality.py`, `audit_sarif.py`): Inventar (Zeichen/≈Tokens/TOC/LaTeX/Bundle-Bytes), Abschnitts-Breakdown großer Dateien, Frontmatter & `agentskills.io`-Spec (NFKC-`name`, `compatibility`, `file_names`-Abgleich, ≤ 1024 Zeichen, DE+EN-Trigger), echte Markdown-Links (inkl. `%20`, Klammern, Link-Titel & GitHub-Slugs), ungeschlossene Codeblöcke, Mermaid-Lint, tote lokale Verweise **und** transitive Orphan-Files (BFS ab `SKILL.md`), Format-Lint, Portabilität/Sandbox-Anti-Patterns, **Unicode-Smuggling & Bidi-Overrides**, **AST-Skript-Security & Secret-Scan**, Cross-Language-Contamination, README-Tier- & Workflow-Heuristiken, Datei-Duplikate, `evals/cases.json`-Schema + Negative-Trigger-/Leakage-Lint, Sicherheits-Heuristik, stabile Regel-IDs (`SV-P1-01`…), SARIF-2.1.0-Export und Modus-A/B-Hygiene inkl. `__pycache__`/`.pyc`-Check.
-3. **Gezielt gegenlesen:** Anfang von `SKILL.md` (Frontmatter + Routing), vorhandene Skripte (`--self-test` laufen lassen!) und CI/Validator.
+   Prüft automatisch (über `skill_audit.py` + Hilfsmodule `audit_security.py`, `audit_quality.py`, `audit_sarif.py`): Zweck-/Scope-Erfassung & Purpose-Abgleich, Inventar (Zeichen/≈Tokens/TOC/LaTeX/Bundle-Bytes), Abschnitts-Breakdown großer Dateien, Frontmatter & `agentskills.io`-Spec (NFKC-`name`, `compatibility`, `file_names`-Abgleich, ≤ 1024 Zeichen, DE+EN-Trigger), echte Markdown-Links (inkl. `%20`, Klammern, Link-Titel & GitHub-Slugs), ungeschlossene Codeblöcke, Mermaid-Lint, tote lokale Verweise **und** transitive Orphan-Files (BFS ab `SKILL.md`), Format-Lint, Portabilität/Sandbox-Anti-Patterns, **Unicode-Smuggling & Bidi-Overrides**, **AST-Skript-Security & Secret-Scan**, Cross-Language-Contamination, README-Tier- & Workflow-Heuristiken, Datei-Duplikate, `evals/cases.json`-Schema + Negative-Trigger-/Leakage-Lint, Sicherheits-Heuristik, stabile Regel-IDs (`SV-P1-01`…), SARIF-2.1.0-Export und Modus-A/B-Hygiene inkl. `__pycache__`/`.pyc`-Check.
+3. **Gezielt gegenlesen:** Passt die implementierte Architektur (Skripte, Referenzen, Workflows) wirklich zum erfassten Zweck? Vorhandene Skripte per `--self-test` prüfen.
 
 ## Phase 2 – Fachliche & qualitative Tiefenprüfung
 
-Die Checkliste in `references/PRUEFKATALOG.md` (Kategorien A–G) domänenpassend abarbeiten (Fach-/Wissens-, Coding-/DevOps- oder Prompt-/Workflow-Skill). Jeden Verdacht vor Aufnahme in den Bericht per `grep -n` / `view_file` bestätigen und alle betroffenen Kopien notieren.
+Die Checkliste in `references/PRUEFKATALOG.md` (Vorab-Gate `0` + Kategorien A–G) domänenpassend abarbeiten (Fach-/Wissens-, Coding-/DevOps- oder Prompt-/Workflow-Skill). Jeden Verdacht vor Aufnahme in den Bericht per `grep -n` / `view_file` bestätigen und alle betroffenen Kopien notieren.
 
 ## Phase 3 – Bericht schreiben & Freigabe einholen
 
