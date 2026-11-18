@@ -1,0 +1,62 @@
+{
+  "skill_name": "skill-verbesserungsanalyse",
+  "version": "1.3-DE",
+  "cases": [
+    {
+      "id": "eval-01-measure-before-judge",
+      "prompt": "Überprüfe diesen Skill-Ordner und sag mir, ob er noch verbesserbar ist.",
+      "expected_modules": ["SKILL.md", "scripts/skill_audit.py", "references/PRUEFKATALOG.md"],
+      "must_contain": ["skill_audit.py", "Bestandsaufnahme", "P1", "Verbesserungsanalyse.md", "noch nichts geändert"],
+      "must_not_contain": ["ich habe bereits committet"]
+    },
+    {
+      "id": "eval-02-no-overengineering-small-skill",
+      "prompt": "Prüfe diesen kleinen 2-KB-Workflow-Skill unter ~/.gemini/skills/mini-helper/.",
+      "expected_modules": ["SKILL.md", "references/PRUEFKATALOG.md"],
+      "must_contain": ["Modus A", "kein Split nötig"],
+      "must_not_contain": ["Handbuch-Generator erstellen", "git push origin main"]
+    },
+    {
+      "id": "eval-03-large-repo-with-duplicates",
+      "prompt": "Mach eine Verbesserungsanalyse für unser 400k-Token-Wissens-Repo mit handgepflegtem Gesamthandbuch.",
+      "expected_modules": ["SKILL.md", "scripts/skill_audit.py", "scripts/add_toc.py"],
+      "must_contain": ["--sections", "Split", "add_toc.py", "Generator-Skript", "--check", "Modus B"],
+      "must_not_contain": []
+    },
+    {
+      "id": "eval-04-verify-before-reporting",
+      "prompt": "Mir kommt vor, in der Tabelle stehen falsche Grenzwerte — schreib das direkt als P1-Fehler in den Bericht.",
+      "expected_modules": ["SKILL.md", "references/PRUEFKATALOG.md"],
+      "must_contain": ["grep", "Fundstelle", "verifizieren"],
+      "must_not_contain": ["ungeprüft übernommen"]
+    },
+    {
+      "id": "eval-05-dead-tool-references",
+      "prompt": "In SKILL.md stehen Aufrufe von helper_tool.py und magic_parser(), die es gar nicht gibt.",
+      "expected_modules": ["SKILL.md", "references/BERICHT_VORLAGE.md"],
+      "must_contain": ["Option A", "Option B", "falls verfügbar", "--self-test"],
+      "must_not_contain": []
+    },
+    {
+      "id": "eval-06-coding-skill-audit",
+      "prompt": "Check meinen DevOps-Skill, der überall 'sudo apt-get install' empfiehlt und keine Stoppkriterien hat.",
+      "expected_modules": ["SKILL.md", "references/PRUEFKATALOG.md"],
+      "must_contain": ["P1", "Sandbox", "Verifikations-", "Stoppkriterien"],
+      "must_not_contain": []
+    },
+    {
+      "id": "eval-07-ci-strict-mode",
+      "prompt": "Wie kann ich skill_audit.py direkt in GitHub Actions als strengen Validator mit Exit-Code laufen lassen?",
+      "expected_modules": ["SKILL.md", "scripts/skill_audit.py", "references/PRUEFKATALOG.md"],
+      "must_contain": ["--fail-on p2", "Exit", "CI"],
+      "must_not_contain": []
+    },
+    {
+      "id": "eval-08-bytecode-and-bundle-budget",
+      "prompt": "In meinem Skill-Ordner liegen __pycache__/*.pyc Dateien und get_skill_resources schneidet die Ausgabe bei 46 KB ab.",
+      "expected_modules": ["SKILL.md", "references/PRUEFKATALOG.md"],
+      "must_contain": ["__pycache__", "dont_write_bytecode", "46", "Terminal"],
+      "must_not_contain": []
+    }
+  ]
+}
