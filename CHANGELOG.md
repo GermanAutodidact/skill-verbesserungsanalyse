@@ -2,6 +2,13 @@
 
 Alle nennenswerten Änderungen an `skill-verbesserungsanalyse` werden hier dokumentiert.
 
+## [1.6-DE] – 2026-11-19
+
+### Hinzugefügt (Prozess-Lifecycle- & Orphan-Schutz `SV-P2-12`)
+- **Neuer P2-Prüfsensor `SV-P2-12` (`ProcessLifecycleRisk`):** `scripts/audit_quality.py` (`scan_process_lifecycle()`) prüft gebündelte `.py`-Skripte (AST), `.ps1`-Skripte und `sidecar.json`-Konfigurationen auf Risiken durch verwaiste oder doppelte Hintergrundprozesse (`subprocess.Popen` ohne `with`/`atexit`/`signal`-Cleanup, `ThreadingHTTPServer`/`ThreadingTCPServer` ohne `daemon_threads = True`, `.serve_forever()`/`.run_polling()`/`run_stdio` ohne Parent-PID-Watchdog oder Signal-Handler, `Start-Process` ohne `-Wait`/Timeout sowie `restart_policy: always` ohne Guard).
+- **Automatische Nachrüstung in Phase 3:** `SKILL.md` und `references/PRUEFKATALOG.md` verankern bei `SV-P2-12`-Befunden verbindlich die direkte Code-Nachrüstung (Parent-Watchdog, `atexit`/`signal`-Shutdown, `daemon_threads = True`, PID-/Single-Instance-Guard & Timeout-Cleanup).
+- **Regel-Registry & Eval-Ausbau:** `scripts/audit_sarif.py` (`TOOL_VERSION = "1.6-DE"`, `RULE_COUNT = 28`) und `evals/cases.json` (`eval-13-process-lifecycle-orphan-protection`, 13 Szenarien) aktualisiert.
+
 ## [1.5-DE] – 2026-11-18
 
 ### Hinzugefügt & Geschärft (v1.5-DE — Semantisches Zweck-Gate, Evidenz & Security-Transparenz)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""SARIF-2.1.0-Exporter und zentraler Regelkatalog für skill_audit.py (v1.5-DE).
+"""SARIF-2.1.0-Exporter und zentraler Regelkatalog für skill_audit.py (v1.6-DE).
 
 Eigenständiges, abhängigkeitsfreies Modul (Python 3.10+ Stdlib) zur Normalisierung
 von Audit-Befunden aus ``skill_audit.audit_directory()`` (kompatibel mit v1.3-,
-v1.4- und v1.5-Report-Strukturen) sowie zur Serialisierung als SARIF-2.1.0-Dokument.
+v1.4-, v1.5- und v1.6-Report-Strukturen) sowie zur Serialisierung als SARIF-2.1.0-Dokument.
 
 Nutzung:
   python3 scripts/audit_sarif.py --self-test
@@ -29,10 +29,10 @@ SARIF_VERSION = "2.1.0"
 TOOL_NAME = "skill-verbesserungsanalyse"
 TOOL_INFORMATION_URI = "https://github.com/GermanAutodidact/skill-verbesserungsanalyse"
 
-TOOL_VERSION = "1.5-DE"
-RULE_COUNT = 27
+TOOL_VERSION = "1.6-DE"
+RULE_COUNT = 28
 
-# Stabiler Regelkatalog (SV-P1-01 .. SV-P3-10) für alle v1.3-, v1.4- und v1.5-Prüfungen.
+# Stabiler Regelkatalog (SV-P1-01 .. SV-P3-10) für alle v1.3- bis v1.6-Prüfungen.
 RULES: dict[str, dict[str, str]] = {
     # --- P1 (level="error") ---
     "SV-P1-01": {
@@ -223,6 +223,19 @@ RULES: dict[str, dict[str, str]] = {
             "marshal, shelve, or unsafe yaml.load (script-unsafe-deserialize)."
         ),
         "category": "security",
+    },
+    "SV-P2-12": {
+        "priority": "P2",
+        "level": "warning",
+        "name": "ProcessLifecycleRisk",
+        "short_description": "Missing process lifecycle cleanup or orphan-process guard in script or sidecar",
+        "full_description": (
+            "Bundled script or sidecar starts background subprocesses, servers, or "
+            "restart_policy=always workers without lifecycle cleanup (atexit/signal, "
+            "parent-PID watchdog, single-instance lock, daemon_threads, or wait timeout), "
+            "risking leftover orphaned or duplicate background processes."
+        ),
+        "category": "reliability",
     },
     # --- P3 (level="note") ---
     "SV-P3-01": {
@@ -839,6 +852,17 @@ def extract_findings(report: dict[str, object]) -> list[dict[str, object]]:
         else:
             p3_findings.append(finding)
 
+    # --- SV-P2-12: Process lifecycle / orphan process risks ---
+    for entry in _iter_list(report.get("process_lifecycle_issues", [])):
+        if isinstance(entry, dict):
+            conf = str(entry.get("confidence", "")).strip() or None
+            msg = _extract_item_message(entry, RULES["SV-P2-12"]["short_description"])
+            p2_findings.append(
+                _make_finding("SV-P2-12", entry.get("file", "SKILL.md"), entry.get("line"), msg, confidence=conf)
+            )
+        elif isinstance(entry, str) and entry.strip():
+            p2_findings.append(_make_finding("SV-P2-12", "SKILL.md", None, entry))
+
     # --- SV-P3-01 & SV-P3-02: SKILL.md frontmatter description & EN trigger ---
     if fm.get("exists"):
         if not fm.get("description_within_1024", True):
@@ -1060,7 +1084,7 @@ def render_sarif(report: dict[str, object], tool_version: str = TOOL_VERSION) ->
 
 
 def _build_mock_report() -> dict[str, object]:
-    """Builds a comprehensive mock audit report covering every P1, P2, and P3 rule (27 rules)."""
+    """Builds a comprehensive mock audit report covering every P1, P2, and P3 rule (28 rules)."""
     return {
         "target": "/tmp/mock-skill",
         "mode": "skill-folder",
@@ -1209,6 +1233,16 @@ def _build_mock_report() -> dict[str, object]:
                 "message": "Version in evals/cases.json (1.4-DE) weicht von SKILL.md (1.5-DE) ab.",
             },
         ],
+        "process_lifecycle_issues": [
+            {
+                "file": "scripts/server.py",
+                "line": 42,
+                "severity": "p2",
+                "kind": "unmanaged-popen",
+                "confidence": "verified",
+                "message": "subprocess.Popen ohne Lifecycle-Cleanup (with/atexit/signal + terminate/kill).",
+            },
+        ],
     }
 
 
@@ -1220,13 +1254,13 @@ def run_self_test() -> int:
         if not cond:
             failures.append(msg)
 
-    # 1. Rule catalog integrity (27 rules: SV-P1-01..06, SV-P2-01..11, SV-P3-01..10)
+    # 1. Rule catalog integrity (28 rules: SV-P1-01..06, SV-P2-01..12, SV-P3-01..10)
     expected_rule_ids = {
         *(f"SV-P1-0{i}" for i in range(1, 7)),
-        *(f"SV-P2-{i:02d}" for i in range(1, 12)),
+        *(f"SV-P2-{i:02d}" for i in range(1, 13)),
         *(f"SV-P3-{i:02d}" for i in range(1, 11)),
     }
-    check(len(RULES) == RULE_COUNT == 27, f"Expected RULE_COUNT=27, got len(RULES)={len(RULES)}")
+    check(len(RULES) == RULE_COUNT == 28, f"Expected RULE_COUNT=28, got len(RULES)={len(RULES)}")
     check(set(RULES.keys()) == expected_rule_ids, f"RULES keys mismatch: {set(RULES.keys()) ^ expected_rule_ids}")
     for rid, meta in RULES.items():
         check(meta["priority"] in {"P1", "P2", "P3"}, f"{rid}: invalid priority {meta['priority']}")
@@ -1253,7 +1287,7 @@ def run_self_test() -> int:
     }
     check(extract_findings(minimal_v13) == [], "Clean v1.3/v1.4/v1.5 report should yield 0 findings")
 
-    # 3. Full mock report covering all 27 rules (P1, P2, P3)
+    # 3. Full mock report covering all 28 rules (P1, P2, P3)
     mock_report = _build_mock_report()
     findings = extract_findings(mock_report)
     found_ids = {str(f["rule_id"]) for f in findings}

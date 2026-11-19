@@ -1,6 +1,6 @@
 {
   "skill_name": "skill-verbesserungsanalyse",
-  "version": "1.5-DE",
+  "version": "1.6-DE",
   "cases": [
     {
       "id": "eval-01-measure-before-judge",
@@ -105,6 +105,20 @@
         "Das versprochene Skript ist vorhanden und einsatzbereit",
         "Ein bloßes audit-ok ohne Begründung reicht zur Unterdrückung aus",
         "Frontmatter und Haupttext sind widerspruchsfrei"
+      ]
+    },
+    {
+      "id": "eval-13-process-lifecycle-orphan-protection",
+      "prompt": "Untersuche unser lokales Server- und Bot-Bundle darauf, ob gestartete Hintergrunddienste nach dem Schließen der Hauptanwendung als Geister-Instanzen weiterlaufen können, und rüste die fehlende Absicherung nach.",
+      "expected_modules": ["SKILL.md", "scripts/skill_audit.py", "scripts/audit_quality.py", "references/PRUEFKATALOG.md"],
+      "must_contain": ["SV-P2-12", "atexit", "Watchdog", "daemon_threads", "[Verifiziert]"],
+      "must_not_contain": ["keine Prozessprüfung möglich"],
+      "verification_rubric": [
+        "Prüft per scan_process_lifecycle / SV-P2-12 auf ungeschützte Server-Loops, subprocess.Popen ohne Cleanup und fehlende Parent-Überwachung.",
+        "Schlägt konkrete Lifecycle-Schutzmaßnahmen vor und implementiert nach Freigabe atexit/signal-Handler, Parent-PID-Watchdog und daemon_threads = True."
+      ],
+      "must_not_claim": [
+        "Verwaiste Hintergrundprozesse können in Skills und Skripten nicht statisch geprüft werden"
       ]
     }
   ]

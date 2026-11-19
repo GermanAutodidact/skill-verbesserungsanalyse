@@ -1,4 +1,4 @@
-# `skill-verbesserungsanalyse` (v1.5-DE)
+# `skill-verbesserungsanalyse` (v1.6-DE)
 
 Strukturierte **Verbesserungsanalyse (Audit → Bericht → Umsetzung)** als portabler KI-Skill für **KI-Skills (`SKILL.md`), Prompts, Wissensdatenbanken und Dokumentations-Repos** — vollständig **Zero-Dependency** (Python 3.10+ Standardbibliothek).
 
@@ -14,14 +14,15 @@ Das Paket kombiniert das deterministische Audit-Skript ([`scripts/skill_audit.py
   - **Scan-Coverage & `# audit-ok: <Begründung>`:** Weist transparent die **Scan-Coverage** (`scanned_files` vs. `skipped_files`) aus und erzwingt für Unterdrückungen eine explizite Begründung (`# audit-ok: <Begründung>` bzw. `// audit-ok: <Begründung>`; ein bloßes `# audit-ok` ohne Begründung wird als P2 gemeldet).
 - **Spec-, Struktur-, Konsistenz- & Qualitäts-Checks ([`scripts/audit_quality.py`](scripts/audit_quality.py)):**
   - **Transitive Orphan-File-Erkennung (`SV-P2-03`, BFS ab `SKILL.md`):** Meldet unreferenzierte Dateien in `scripts/`, `references/` und `assets/` (folgt auch Python-Imports transitiv).
+  - **Prozess-Lifecycle- & Orphan-Schutz (`SV-P2-12`):** Prüft Skripte (`.py`, `.ps1`) und Sidecars auf `subprocess.Popen` ohne `with`/`atexit`/`signal`-Cleanup, Threading-Server ohne `daemon_threads = True`, Dauer-Loops (`.serve_forever()`, `.run_polling()`) bzw. STDIO-MCP-Server (`run_stdio`) ohne Parent-PID-Watchdog sowie `Start-Process` ohne `-Wait`/Timeout und `restart_policy: always` ohne Guard.
   - **`agentskills.io`-Spec-Validierung (`SV-P2-09`, `SV-P3-05`):** NFKC-`name` (≤ 64 Zeichen, Kleinbuchstaben/Ziffern/Bindestriche, kein `--`, Ordner-Abgleich), `compatibility` (≤ 500 Zeichen) & Hinweis auf Nicht-Standard-Felder.
   - **Cross-Language-Contamination, Claim-Alignment & Workflow-Qualität (`SV-P3-06`, `SV-P3-07`, `SV-P3-09`):** Erkennt unverbundene Programmiersprachen-Familien in `SKILL.md`, fehlende `Don't use`-Abgrenzungen, Ghost-Claims (versprochene Skripte/Flags fehlen), Frontmatter/Body-Widersprüche, README-Tier-Sektionen in `SKILL.md` sowie Multi-Step-Workflows ohne Verifikations-/Exit-Hinweise.
-  - **Versions- & Regel-Konsistenz (`SV-P3-10`):** Prüft als 27. Regel automatisch, ob Version (`1.5-DE`) und Regel-Anzahl (27 Regeln `SV-P1-01`…`SV-P3-10`) zwischen Code-SSOT, `SKILL.md`, `README.md`, `references/` und `evals/cases.json` synchron sind.
+  - **Versions- & Regel-Konsistenz (`SV-P3-10`):** Prüft automatisch, ob Version (`1.6-DE`) und Regel-Anzahl (28 Regeln `SV-P1-01`…`SV-P3-10` inkl. `SV-P2-12`) zwischen Code-SSOT, `SKILL.md`, `README.md`, `references/` und `evals/cases.json` synchron sind.
   - **Eval-Qualität & Leakage-Lint (`SV-P3-08`):** Prüft `evals/cases.json` auf Negative-Trigger-Abdeckung (`should_trigger: false`), Adversarial-Rubriken (`verification_rubric`, `must_not_claim`) und Prompt-Leakage.
 - **Markdown-, Link-, Format- & Hygiene-Lint ([`scripts/skill_audit.py`](scripts/skill_audit.py)):**
   - YAML-Frontmatter-Parser (CRLF, Flow-Multiline, Block-Scalars `>`/`|`, Inline-/Block-Listen, `file_names`-Abgleich, ≤ 1.024 Zeichen, DE+EN-Trigger).
   - Relative Markdown-Links & `#Anker`, ungeschlossene Codeblöcke, Mermaid-Syntax-Lint, tote lokale Verweise, Format-Lint, Sandbox-Anti-Patterns (`sudo`/`apt-get`), Duplikate & `__pycache__`-Hygiene.
-- **27 stabile Regel-IDs & SARIF 2.1.0 ([`scripts/audit_sarif.py`](scripts/audit_sarif.py)):**
+- **28 stabile Regel-IDs & SARIF 2.1.0 ([`scripts/audit_sarif.py`](scripts/audit_sarif.py)):**
   - Einheitliche Regel-IDs (`SV-P1-01` … `SV-P3-10`), `--rules`-Übersicht, `--sarif`-Export für GitHub Code Scanning / PR-Annotationen und `--fail-on p1|p2|p3` für CI-Gates.
 - **Kontrollierter Git-Staged-Approval-Workflow & Idempotentes TOC ([`scripts/add_toc.py`](scripts/add_toc.py)):**
   - In Phase 3 strikte Prüfung von `git status --short`, Zusammenfassung von `git diff --stat`, gezieltes Staging (`git add <datei1> <datei2>` statt blindem `git add -A`) und getrennte Freigabe-Schritte für Datei-Edits, Commit und Push.
@@ -46,7 +47,7 @@ python3 scripts/skill_audit.py <ziel-ordner> --fail-on p2
 # SARIF 2.1.0 Ausgabe (z. B. für GitHub Code Scanning / PR-Annotationen)
 python3 scripts/skill_audit.py <ziel-ordner> --sarif > results.sarif
 
-# Maschinenlesbares JSON inkl. stabiler Regel-IDs & 27er Regel-Katalog anzeigen
+# Maschinenlesbares JSON inkl. stabiler Regel-IDs & 28er Regel-Katalog anzeigen
 python3 scripts/skill_audit.py <ziel-ordner> --json
 python3 scripts/skill_audit.py --rules
 
@@ -79,14 +80,14 @@ python3 scripts/skill_audit.py . --fail-on p2
 | Pfad | Zweck |
 |---|---|
 | [`SKILL.md`](SKILL.md) | Kern-Workflow (Phasen 1–3), Zweck-/Rückfrage-Gate, Staged-Git-Workflow & Priorisierungs-Matrix (P1–P4) |
-| [`references/PRUEFKATALOG.md`](references/PRUEFKATALOG.md) | Qualitativer Prüfkatalog (Vorab-Gate 0 + Kategorien A–G, 27 Regeln `SV-P1-01`…`SV-P3-10`) |
+| [`references/PRUEFKATALOG.md`](references/PRUEFKATALOG.md) | Qualitativer Prüfkatalog (Vorab-Gate 0 + Kategorien A–G, 28 Regeln `SV-P1-01`…`SV-P3-10` inkl. `SV-P2-12`) |
 | [`references/BERICHT_VORLAGE.md`](references/BERICHT_VORLAGE.md) | Evidenzbasierte Berichtsvorlage (`[Verifiziert]` vs. `[Heuristik / Verdacht]`, Nachweis & Regressionstest) |
 | [`scripts/skill_audit.py`](scripts/skill_audit.py) | Haupt-CLI, Orchestrierung, Markdown/JSON/SARIF-Ausgabe & CI-Validator |
 | [`scripts/audit_security.py`](scripts/audit_security.py) | Multi-Format-Security-, Unicode-Smuggling-, Bidi-, AST- & Secret-Scanner inkl. Scan-Coverage & `# audit-ok: <Begründung>` |
-| [`scripts/audit_quality.py`](scripts/audit_quality.py) | Claim-vs.-Reality-Abgleich (`SV-P3-09`), Versions-/Regel-SSOT (`SV-P3-10`), BFS-Orphans, `agentskills.io`-Spec, Contamination, Workflow- & Eval-Lint |
-| [`scripts/audit_sarif.py`](scripts/audit_sarif.py) | Stabile Regel-Registry (27 Regeln `SV-P1-01`…`SV-P3-10`) & SARIF-2.1.0-Exporter |
+| [`scripts/audit_quality.py`](scripts/audit_quality.py) | Prozess-Lifecycle-Check (`SV-P2-12`), Claim-vs.-Reality-Abgleich (`SV-P3-09`), Versions-/Regel-SSOT (`SV-P3-10`), BFS-Orphans, `agentskills.io`-Spec, Contamination, Workflow- & Eval-Lint |
+| [`scripts/audit_sarif.py`](scripts/audit_sarif.py) | Stabile Regel-Registry (28 Regeln `SV-P1-01`…`SV-P3-10` inkl. `SV-P2-12`) & SARIF-2.1.0-Exporter |
 | [`scripts/add_toc.py`](scripts/add_toc.py) | Idempotenter TOC- & Anker-Generator (`--check`, `--self-test`) |
-| [`evals/cases.json`](evals/cases.json) | Evaluierungs- & Regressionsfälle (12 Szenarien inkl. Negative-Trigger, Zweck-Gate & Adversarial-Claim-Check) |
+| [`evals/cases.json`](evals/cases.json) | Evaluierungs- & Regressionsfälle (13 Szenarien inkl. Negative-Trigger, Zweck-Gate, Lifecycle-Check & Adversarial-Claim-Check) |
 
 ## Lizenz
 

@@ -54,7 +54,7 @@
 | Maßnahme | Nutzen |
 |---|---|
 | `evals/cases.json` (inkl. Negative-Trigger, Adversarial-Fällen, `verification_rubric` & Leakage-Lint) | <…> |
-| Selbsttests / Validator (`--fail-on p2`, `--sarif`, 27 Regeln `SV-P1-01`…`SV-P3-10`) + CI *(bei Git-Repos)* | <…> |
+| Selbsttests / Validator (`--fail-on p2`, `--sarif`, 28 Regeln `SV-P1-01`…`SV-P3-10` inkl. `SV-P2-12`) + CI *(bei Git-Repos)* | <…> |
 | `LICENSE` + `NOTICE.md` + `CHANGELOG.md` *(bei Git-Repos mit externen Quellen)* | <…> |
 
 ---

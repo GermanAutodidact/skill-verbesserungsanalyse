@@ -1118,8 +1118,204 @@ def check_purpose_alignment(
     }
 
 
+_AUDIT_OK_JUSTIFIED_RE = re.compile(r"(?:#|//)\s*audit-ok\s*:\s*\S{3,}", re.I)
+
+
+def _call_name(node: ast.AST) -> str:
+    """Extrahiert den qualifizierten Namen eines AST-Aufrufziels."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _call_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def _walk_non_test_ast(node: ast.AST):
+    """Traversiert den AST und überspringt test_* sowie run_self_test-Funktionen."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+            child.name == "run_self_test" or child.name.startswith("test_")
+        ):
+            continue
+        yield child
+        yield from _walk_non_test_ast(child)
+
+
+def _collect_with_context_calls(tree: ast.AST) -> set[int]:
+    """Sammelt AST-Call-IDs, die direkt als Context-Manager in `with` stehen."""
+    ctx_calls: set[int] = set()
+    for node in _walk_non_test_ast(tree):
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if isinstance(item.context_expr, ast.Call):
+                    ctx_calls.add(id(item.context_expr))
+    return ctx_calls
+
+
+def _has_justified_audit_ok(lines: list[str], lineno: int) -> bool:
+    """Prüft auf ein begründetes `# audit-ok: <Begründung>` in der Zeile oder darüber."""
+    for idx in (lineno - 1, lineno - 2):
+        if 0 <= idx < len(lines) and _AUDIT_OK_JUSTIFIED_RE.search(lines[idx]):
+            return True
+    return False
+
+
+def _scan_python_lifecycle(rel: str, text: str) -> list[dict[str, object]]:
+    """Prüft ein Python-Skript per AST auf fehlenden Prozess-Lifecycle-/Orphan-Schutz."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+
+    lines = text.splitlines()
+    has_atexit_or_signal = bool(
+        re.search(r"\b(?:atexit\.register|signal\.signal|JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)\b", text)
+    )
+    has_terminate_or_kill = bool(re.search(r"\.(?:terminate|kill)\s*\(", text))
+    has_parent_watchdog = bool(
+        re.search(
+            r"\b(?:os\.getppid|PERSONALIFE_PARENT_PID|parent_watchdog|start_parent_watchdog|is_pid_alive)\b",
+            text,
+        )
+    )
+    has_daemon_threads = bool(re.search(r"\bdaemon_threads\s*=\s*True\b", text))
+
+    with_calls = _collect_with_context_calls(tree)
+    findings: list[dict[str, object]] = []
+
+    def emit(lineno: int, kind: str, message: str) -> None:
+        if _has_justified_audit_ok(lines, lineno):
+            return
+        snippet = lines[lineno - 1].strip()[:120] if 0 < lineno <= len(lines) else ""
+        findings.append(
+            {
+                "file": rel,
+                "line": lineno,
+                "severity": "p2",
+                "kind": kind,
+                "confidence": "verified",
+                "snippet": snippet,
+                "message": message,
+            }
+        )
+
+    for node in _walk_non_test_ast(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "run_stdio":
+            if not has_parent_watchdog:
+                emit(
+                    node.lineno,
+                    "stdio-mcp-no-parent-watchdog",
+                    "STDIO-Server `run_stdio` ohne Parent-PID-Watchdog (`os.getppid`) — "
+                    "kann bei Absturz des Hosts als verwaister Hintergrundprozess weiterlaufen.",
+                )
+        elif isinstance(node, ast.Call):
+            target_name = _call_name(node.func)
+            short_name = target_name.rsplit(".", 1)[-1]
+            if (target_name == "subprocess.Popen" or short_name == "Popen") and id(node) not in with_calls:
+                if not (has_atexit_or_signal and has_terminate_or_kill):
+                    emit(
+                        node.lineno,
+                        "unmanaged-popen",
+                        "`subprocess.Popen` ohne `with`-Block oder `atexit`/`signal` + `.terminate()`/`.kill()` — "
+                        "Kindprozess kann beim Abbruch verwaist zurückbleiben.",
+                    )
+            elif short_name in {"ThreadingHTTPServer", "ThreadingTCPServer"}:
+                if not has_daemon_threads:
+                    emit(
+                        node.lineno,
+                        "threading-server-non-daemon",
+                        f"`{short_name}` ohne `daemon_threads = True` — "
+                        "offene Handler-Threads blockieren das saubere Beenden.",
+                    )
+            elif short_name in {"serve_forever", "run_polling"}:
+                if not (has_atexit_or_signal or has_parent_watchdog):
+                    emit(
+                        node.lineno,
+                        "server-loop-no-lifecycle-guard",
+                        f"Dauer-Loop `.{short_name}()` ohne `atexit`/`signal`-Shutdown oder Parent-Watchdog — "
+                        "kann als doppelter oder verwaister Hintergrundprozess weiterlaufen.",
+                    )
+
+    return findings
+
+
+def scan_process_lifecycle(target: pathlib.Path, files: list[str]) -> list[dict[str, object]]:
+    """Prüft gebündelte Skripte (.py, .ps1) und Sidecar-Configs auf fehlenden Orphan-/Lifecycle-Schutz."""
+    issues: list[dict[str, object]] = []
+    for rel in sorted(files):
+        norm = rel.replace("\\", "/")
+        parts = norm.split("/")
+        base = parts[-1]
+        if any(p in {"tests", "evals", "__pycache__", "node_modules", ".git"} for p in parts):
+            continue
+        if base.startswith("test_") or base == "conftest.py":
+            continue
+
+        fpath = target / norm
+        if not fpath.is_file():
+            continue
+
+        if base.endswith(".py"):
+            text = fpath.read_text(encoding="utf-8", errors="replace")
+            issues.extend(_scan_python_lifecycle(norm, text))
+        elif base.endswith(".ps1"):
+            text = fpath.read_text(encoding="utf-8", errors="replace")
+            if "WaitForExit" not in text:
+                lines = text.splitlines()
+                for idx, line in enumerate(lines, start=1):
+                    stripped = line.lstrip()
+                    if stripped.startswith("#"):
+                        continue
+                    if re.search(r"\bStart-Process\b", line, re.I) and not re.search(r"(?:^|\s)-Wait\b", line, re.I):
+                        if not _has_justified_audit_ok(lines, idx):
+                            issues.append(
+                                {
+                                    "file": norm,
+                                    "line": idx,
+                                    "severity": "p2",
+                                    "kind": "ps1-untracked-start-process",
+                                    "confidence": "verified",
+                                    "snippet": stripped[:120],
+                                    "message": (
+                                        "`Start-Process` ohne `-Wait` oder `WaitForExit(timeout)` — "
+                                        "gestarteter Prozess kann unkontrolliert im Hintergrund weiterlaufen."
+                                    ),
+                                }
+                            )
+        elif base == "sidecar.json":
+            text = fpath.read_text(encoding="utf-8", errors="replace")
+            try:
+                data = json.loads(text)
+            except Exception:
+                data = None
+            if isinstance(data, dict) and data.get("restart_policy") == "always":
+                if "parent_watchdog" not in text and "single_instance" not in text:
+                    line_no = 1
+                    for idx, line in enumerate(text.splitlines(), start=1):
+                        if "restart_policy" in line:
+                            line_no = idx
+                            break
+                    issues.append(
+                        {
+                            "file": norm,
+                            "line": line_no,
+                            "severity": "p2",
+                            "kind": "sidecar-restart-always-no-guard",
+                            "confidence": "heuristic",
+                            "snippet": '"restart_policy": "always"',
+                            "message": (
+                                "`sidecar.json` nutzt `restart_policy: always` ohne dokumentierten "
+                                "`parent_watchdog`/`single_instance`-Schutz — Gefahr von Mehrfach-/Geisterprozessen."
+                            ),
+                        }
+                    )
+
+    return issues
+
+
 def run_self_test() -> int:
-    """Führt umfassende Selbsttests für alle 6 öffentlichen Qualitätsprüfungen + Adversarial Corpus aus."""
+    """Führt umfassende Selbsttests für alle 7 öffentlichen Qualitätsprüfungen + Adversarial Corpus aus."""
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
 
@@ -1560,7 +1756,60 @@ def run_self_test() -> int:
         adv_fake_eval_issues = check_evals_quality(adv_fake_eval_path)
         assert any(x["kind"] == "eval-prompt-leakage" for x in adv_fake_eval_issues), adv_fake_eval_issues
 
-    print("OK: audit_quality.py Selbsttest (alle 7 Module inkl. Zweck-Abgleich, Rubrik-Evals & Adversarial Corpus) bestanden.")
+        # --- 8. scan_process_lifecycle ---
+        lc_dir = root / "lifecycle_test"
+        (lc_dir / "scripts").mkdir(parents=True)
+        (lc_dir / "sidecars" / "demo").mkdir(parents=True)
+        (lc_dir / "scripts" / "leaky_daemon.py").write_text(
+            "import subprocess\n"
+            "from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler\n"
+            "def start():\n"
+            "    subprocess.Popen(['python', 'w.py'])\n"
+            "    srv = ThreadingHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)\n"
+            "    srv.serve_forever()\n"
+            "class MCP:\n"
+            "    def run_stdio(self):\n"
+            "        pass\n",
+            encoding="utf-8",
+        )
+        (lc_dir / "scripts" / "safe_daemon.py").write_text(
+            "import atexit, os, signal, subprocess\n"
+            "from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler\n"
+            "def start():\n"
+            "    os.getppid()\n"
+            "    p = subprocess.Popen(['python', 'w.py'])\n"
+            "    atexit.register(p.terminate)\n"
+            "    signal.signal(signal.SIGTERM, lambda *_: p.terminate())\n"
+            "    srv = ThreadingHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)\n"
+            "    srv.daemon_threads = True\n"
+            "    srv.serve_forever()\n"
+            "class MCP:\n"
+            "    def run_stdio(self):\n"
+            "        os.getppid()\n",
+            encoding="utf-8",
+        )
+        (lc_dir / "sidecars" / "demo" / "sidecar.json").write_text(
+            json.dumps({"restart_policy": "always", "command": "python"}),
+            encoding="utf-8",
+        )
+        lc_files = [
+            "scripts/leaky_daemon.py",
+            "scripts/safe_daemon.py",
+            "sidecars/demo/sidecar.json",
+        ]
+        lc_issues = scan_process_lifecycle(lc_dir, lc_files)
+        lc_kinds = {x["kind"] for x in lc_issues}
+        expected_lc = {
+            "unmanaged-popen",
+            "threading-server-non-daemon",
+            "server-loop-no-lifecycle-guard",
+            "stdio-mcp-no-parent-watchdog",
+            "sidecar-restart-always-no-guard",
+        }
+        assert lc_kinds == expected_lc, f"Lifecycle mismatch: {lc_issues}"
+        assert all(x["file"] != "scripts/safe_daemon.py" for x in lc_issues), lc_issues
+
+    print("OK: audit_quality.py Selbsttest (alle 8 Module inkl. Zweck-Abgleich, Rubrik-Evals, Lifecycle & Adversarial Corpus) bestanden.")
     return 0
 
 

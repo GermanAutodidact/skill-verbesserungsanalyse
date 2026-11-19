@@ -1,4 +1,4 @@
-# Prüfkatalog für die Verbesserungsanalyse (v1.5-DE)
+# Prüfkatalog für die Verbesserungsanalyse (v1.6-DE)
 
 Jeden Punkt mit **Beleg** (`Datei:Zeile`, grep-Treffer, Regel-ID oder Messwert) sowie Diagnose-Sicherheit (`[Verifiziert]` vs. `[Heuristik / Verdacht]`) bewerten: ✅ ok | ⚠️ verbesserbar | ❌ Fehler.
 
@@ -21,6 +21,7 @@ Jeden Punkt mit **Beleg** (`Datei:Zeile`, grep-Treffer, Regel-ID oder Messwert) 
 ## B. Ausführbarkeit & Agentic-Skill-Qualität (→ P2)
 - [ ] Existiert zu jedem erwähnten Tool, Skript oder Pfad eine Datei im Zielordner oder ein verfügbares Paket (`SV-P2-02`)? Stimmen auch Frontmatter-`file_names` (`SV-P2-07`)?
 - [ ] **Keine verwaisten Dateien (Orphan-Files, `SV-P2-03`):** Jede Datei in `scripts/`, `references/` und `assets/` wird aus `SKILL.md` oder einer eingebundenen Referenz aktiv verlinkt/genutzt.
+- [ ] **Prozess-Lifecycle & Schutz gegen verwaiste Hintergrundprozesse (`SV-P2-12`):** Starten Skripte oder Sidecars Kindprozesse (`subprocess.Popen`, `Start-Process`), Server-Loops (`ThreadingHTTPServer`, `serve_forever`, `run_polling`) oder STDIO-MCP-Server (`run_stdio`), müssen `atexit`/`signal`-Handler, `daemon_threads = True`, Timeout-geschütztes Prozess-Cleanup und ein Parent-PID-Watchdog vorhanden sein (fehlt dieser Schutz, wird er in Phase 3 nach Freigabe automatisch in den Code einprogrammiert).
 - [ ] Sind optionale Tools als „falls verfügbar“ gekennzeichnet und gibt es einen Fallback ohne Tools?
 - [ ] Laufen mitgelieferte Skripte (`--help`, `--self-test`) fehlerfrei?
 - [ ] Sind **Trigger-Bedingungen** klar definiert (*wann anwenden* **und** *wann nicht anwenden*)?
@@ -39,7 +40,7 @@ Jeden Punkt mit **Beleg** (`Datei:Zeile`, grep-Treffer, Regel-ID oder Messwert) 
 - [ ] **Bundle-Budget (Modus A, `SV-P3-04`):** Überschreitet das Gesamt-Bundle 46 KB (`get_skill_resources`-Limit), klar dokumentieren, dass Skripte direkt im Terminal laufen statt mit den Referenzen in den Kontext geladen zu werden.
 - [ ] Große Referenzdateien (> 15k Tokens): Inhaltsverzeichnis mit Ankern/Zeilenbereichen (`scripts/add_toc.py`) und bei > 40k Tokens Warnung *„nicht komplett laden“*.
 - [ ] Routing-Tabelle in `SKILL.md`: Welche Anfrage führt zu welcher Datei/welchem Abschnitt?
-- [ ] **Single Source of Truth & Versions-/Regel-Konsistenz (`SV-P3-10`):** Werden Inhalte in einer Gesamtausgabe doppelt gepflegt, per Generator-Skript (`--check`) statt manuell pflegen; Version (`1.5-DE`) und Regel-Anzahl (27 Regeln `SV-P1-01`…`SV-P3-10`) müssen zwischen Code-SSOT (`scripts/`), `SKILL.md`, `README.md`, `references/` und `evals/cases.json` übereinstimmen.
+- [ ] **Single Source of Truth & Versions-/Regel-Konsistenz (`SV-P3-10`):** Werden Inhalte in einer Gesamtausgabe doppelt gepflegt, per Generator-Skript (`--check`) statt manuell pflegen; Version (`1.6-DE`) und Regel-Anzahl (28 Regeln `SV-P1-01`…`SV-P3-10` inkl. `SV-P2-12`) müssen zwischen Code-SSOT (`scripts/`), `SKILL.md`, `README.md`, `references/` und `evals/cases.json` übereinstimmen.
 - [ ] Große Rohdaten-Blöcke (Register, SMIRKS, JSON-Dumps) auslagern (`references/02b_…` oder `data/`).
 
 ## E. Plattform-übergreifende Nutzung (→ P3)
@@ -55,5 +56,5 @@ Jeden Punkt mit **Beleg** (`Datei:Zeile`, grep-Treffer, Regel-ID oder Messwert) 
 ## G. Qualitätssicherung & Hygiene (→ P4)
 - [ ] Keine Bytecode-/Junk-Dateien (`__pycache__/`, `*.pyc`, `.DS_Store`, `SV-P2-08`) im Skill-Ordner; in Python-Skripten `sys.dont_write_bytecode = True` setzen.
 - [ ] `evals/cases.json` mit validem JSON- & Schema-Format (`SV-P1-02`, `SV-P2-06`) sowie aussagekräftigen Testfällen (eindeutige `id`, `prompt`, `expected_modules`, `must_contain`, `must_not_contain`, optional `verification_rubric` & `must_not_claim`), inkl. Regressions- und Adversarial-Fällen, **Negative-Trigger-Coverage** (`should_trigger: false`) und **Leakage-Lint** (`SV-P3-08`: keine `must_contain`-Antwortbegriffe wörtlich im `prompt`).
-- [ ] Bei Repos mit Validator/CI: 27 stabile Regel-IDs (`SV-P1-01`…`SV-P3-10`) und `--sarif`-Ausgabe für GitHub Code Scanning neben Frontmatter-, Größen-, Link-, Regressions-Lint (`skill_audit.py --fail-on p2`), Generator-Sync- und Skript-Selbsttests.
+- [ ] Bei Repos mit Validator/CI: 28 stabile Regel-IDs (`SV-P1-01`…`SV-P3-10` inkl. `SV-P2-12`) und `--sarif`-Ausgabe für GitHub Code Scanning neben Frontmatter-, Größen-, Link-, Regressions-Lint (`skill_audit.py --fail-on p2`), Generator-Sync- und Skript-Selbsttests.
 - [ ] `CHANGELOG.md` (bei Repos) und Versionssprung im Frontmatter (`SV-P3-10`).

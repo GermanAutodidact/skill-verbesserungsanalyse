@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automatisiertes Audit-Skript für KI-Skills, Wissensdatenbanken und Doku-Repos (v1.4.1-DE).
+"""Automatisiertes Audit-Skript für KI-Skills, Wissensdatenbanken und Doku-Repos (v1.6-DE).
 
 Misst und prüft:
 1. Zweck-, Scope- & Architektur-Abgleich (Frontmatter-Description, Positiv-/Negativ-Trigger, Ziel-Domäne, Skript-Konsistenz)
@@ -12,7 +12,7 @@ Misst und prüft:
 8. Portabilität, Sandbox-Anti-Patterns & Security (Unicode-Smuggling/Bidi-Overrides, AST-Skript-Security, Shell-Risiken & Hardcoded Secrets)
 9. Cross-Language-Contamination, README-Tier-/Workflow-Qualität & Datei-Duplikate
 10. Repo-/Skill-Hygiene (Modus A vs. Modus B) inkl. __pycache__/Junk-Prüfung & evals/cases.json (Schema + Negative-Trigger/Leakage-Lint)
-11. 26 stabile Regel-IDs (SV-P1-01…SV-P3-09), SARIF 2.1.0 Export (--sarif) & CI-Exit-Codes (--fail-on p1|p2|p3)
+11. 28 stabile Regel-IDs (SV-P1-01…SV-P3-10), SARIF 2.1.0 Export (--sarif) & CI-Exit-Codes (--fail-on p1|p2|p3)
 
 Nutzung:
   python3 skill_audit.py <ziel-ordner>                  # Markdown-Report
@@ -21,8 +21,8 @@ Nutzung:
   python3 skill_audit.py <ziel-ordner> --fail-on p2     # CI-/Validator-Modus (Exit 1 ab P2-Befund)
   python3 skill_audit.py <ziel-ordner> --sarif          # SARIF 2.1.0 Ausgabe (GitHub Code Scanning)
   python3 skill_audit.py <ziel-ordner> --json           # JSON-Ausgabe inkl. Regel-IDs
-  python3 skill_audit.py --rules                        # Alle 26 stabilen Regel-IDs anzeigen
-  python3 skill_audit.py --self-test                    # Erweiterter Selbsttest (v1.3 + v1.4 + v1.4.1)
+  python3 skill_audit.py --rules                        # Alle 28 stabilen Regel-IDs anzeigen
+  python3 skill_audit.py --self-test                    # Erweiterter Selbsttest (v1.3–v1.6)
 """
 
 from __future__ import annotations
@@ -889,6 +889,7 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
     script_security_issues = list(sec_res.get("script_security_issues", []))  # type: ignore[arg-type]
     security_coverage = dict(sec_res.get("security_coverage", {}))  # type: ignore[arg-type]
     orphan_files = audit_quality.find_orphan_files(target, all_files, md_texts)
+    process_lifecycle_issues = audit_quality.scan_process_lifecycle(target, sorted_all_files)
 
     # Hygiene (differentiated for Mode A: skill dir vs Mode B: git repo)
     hygiene: dict[str, bool] = {
@@ -934,6 +935,7 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
             "portability_and_sandbox_issue_count": len(portability_and_sandbox_issues),
             "unicode_smuggling_issue_count": len(unicode_smuggling_issues),
             "script_security_issue_count": len(script_security_issues),
+            "process_lifecycle_issue_count": len(process_lifecycle_issues),
             "security_scanned_files": int(security_coverage.get("scanned_count", 0)),
             "security_skipped_files": int(security_coverage.get("skipped_count", 0)),
             "spec_issue_count": len(spec_issues),
@@ -965,6 +967,7 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
         "portability_and_sandbox_issues": portability_and_sandbox_issues[:30],
         "unicode_smuggling_issues": unicode_smuggling_issues[:50],
         "script_security_issues": script_security_issues[:50],
+        "process_lifecycle_issues": process_lifecycle_issues[:50],
         "orphan_files": orphan_files[:50],
         "spec_issues": spec_issues,
         "contamination": contamination,
@@ -1037,6 +1040,8 @@ def evaluate_fail_on(report: dict[str, object], threshold: str) -> list[str]:
     sec_p2 = [x for x in report.get("script_security_issues", []) if x.get("severity") == "p2"]
     if sec_p2:
         reasons.append(f"P2 [SV-P2-11]: {len(sec_p2)} P2-Skript-Security-Befunde (Deserialisierung / unbegründeter audit-ok-Marker)")
+    if s.get("process_lifecycle_issue_count"):
+        reasons.append(f"P2 [SV-P2-12]: {s['process_lifecycle_issue_count']} Prozess-Lifecycle-/Orphan-Risiko-Befund(e)")
     if threshold == "p2":
         return reasons
 
@@ -1191,6 +1196,15 @@ def render_markdown(report: dict[str, object]) -> str:
             )
     else:
         lines.append("- ✅ Keine AST-Skript-Risiken, gefährlichen Shell-/JS-/PS1-Muster, unbegründeten `audit-ok`-Marker oder Hardcoded Secrets gefunden.")
+    if report.get("process_lifecycle_issues"):
+        for pli in report["process_lifecycle_issues"]:
+            conf_tag = "Verifiziert" if pli.get("confidence", "verified") == "verified" else "Heuristik"
+            lines.append(
+                f"- ❌ Prozess-Lifecycle `{pli['file']}:{pli['line']}` [`SV-P2-12` / {pli['kind']} / {conf_tag}]: "
+                f"{pli['message']} (`{pli['snippet']}`)"
+            )
+    else:
+        lines.append("- ✅ Keine Prozess-Lifecycle- oder Orphan-Process-Risiken (`SV-P2-12`) gefunden.")
     if report["long_lines"]:
         for ll in report["long_lines"][:10]:
             lines.append(f"- ℹ️ Überlange Zeile (>1.500 Z.): `{ll['file']}:{ll['line']}` ({ll['length']:,} Zeichen)")
@@ -1374,6 +1388,9 @@ def render_report_draft(report: dict[str, object]) -> str:
         lines.append(f"- Unsichtbares Unicode-Zeichen (`[Verifiziert]`) `{ui['file']}:{ui['line']}`: {ui['codepoint']} ({ui['name']})")
     for si in [x for x in report.get("script_security_issues", []) if x.get("severity") == "p2"]:
         lines.append(f"- P2-Security-Befund (`[Verifiziert]`) `{si['file']}:{si['line']}` [{si['kind']}]: {si['message']}")
+    for pli in report.get("process_lifecycle_issues", []):
+        conf_label = "`[Verifiziert]`" if pli.get("confidence", "verified") == "verified" else "`[Heuristik / Verdacht]`"
+        lines.append(f"- Prozess-Lifecycle (`SV-P2-12`, {conf_label}) `{pli['file']}:{pli['line']}` [{pli['kind']}]: {pli['message']}")
     for fni in report["frontmatter_file_names_issues"]:
         lines.append(f"- Frontmatter `file_names` (`[Verifiziert]`): {fni}")
     if report["junk_files"]:
@@ -1388,6 +1405,7 @@ def render_report_draft(report: dict[str, object]) -> str:
         or any(x.get("severity") == "p2" for x in report.get("spec_issues", []))
         or any(x.get("severity") == "p2" for x in report.get("unicode_smuggling_issues", []))
         or any(x.get("severity") == "p2" for x in report.get("script_security_issues", []))
+        or report.get("process_lifecycle_issues")
         or report["frontmatter_file_names_issues"]
         or report["junk_files"]
     ):
@@ -1650,6 +1668,7 @@ def run_self_test() -> int:
             "import subprocess\n"
             "x = " + "ev" + "al('1+1')  #" + " audit-ok\n"
             "subprocess.run('ls', shell=True)\n"
+            "p = subprocess.Popen(['echo', 'hi'])\n"
             "tok = '" + "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'\n",
             encoding="utf-8",
         )
@@ -1689,6 +1708,7 @@ def run_self_test() -> int:
         s2 = rep2["summary"]
         assert s2["unicode_smuggling_issue_count"] >= 2, f"v1.5 Unicode E2E failed: {rep2['unicode_smuggling_issues']}"
         assert s2["script_security_issue_count"] >= 4, f"v1.5 Security E2E failed: {rep2['script_security_issues']}"
+        assert s2["process_lifecycle_issue_count"] >= 1, f"v1.6 Lifecycle E2E failed: {rep2['process_lifecycle_issues']}"
         assert any(si["kind"] == "unjustified-audit-ok" for si in rep2["script_security_issues"]), rep2["script_security_issues"]
         assert s2["security_scanned_files"] >= 3, rep2["security_coverage"]
         assert any(o["file"] == "scripts/unused_helper.py" for o in rep2["orphan_files"]), rep2["orphan_files"]
@@ -1717,6 +1737,7 @@ def run_self_test() -> int:
             "SV-P2-03",
             "SV-P2-09",
             "SV-P2-11",
+            "SV-P2-12",
             "SV-P3-06",
             "SV-P3-07",
             "SV-P3-08",
@@ -1733,7 +1754,7 @@ def run_self_test() -> int:
 
 
 def render_rules_table() -> str:
-    """Gibt alle stabilen Regel-IDs (SV-P1-01 … SV-P3-10) als Markdown-Tabelle aus."""
+    """Gibt alle 28 stabilen Regel-IDs (SV-P1-01 … SV-P3-10) als Markdown-Tabelle aus."""
     lines = [
         f"# Stabile Audit-Regeln (`skill-verbesserungsanalyse` v{audit_sarif.TOOL_VERSION})",
         "",
