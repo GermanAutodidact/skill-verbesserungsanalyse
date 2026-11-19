@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""SARIF-2.1.0-Exporter und zentraler Regelkatalog für skill_audit.py (v1.4-DE).
+"""SARIF-2.1.0-Exporter und zentraler Regelkatalog für skill_audit.py (v1.5-DE).
 
 Eigenständiges, abhängigkeitsfreies Modul (Python 3.10+ Stdlib) zur Normalisierung
-von Audit-Befunden aus ``skill_audit.audit_directory()`` (kompatibel mit v1.3-
-und v1.4-Report-Strukturen) sowie zur Serialisierung als SARIF-2.1.0-Dokument.
+von Audit-Befunden aus ``skill_audit.audit_directory()`` (kompatibel mit v1.3-,
+v1.4- und v1.5-Report-Strukturen) sowie zur Serialisierung als SARIF-2.1.0-Dokument.
 
 Nutzung:
   python3 scripts/audit_sarif.py --self-test
@@ -17,6 +17,7 @@ import argparse
 import json
 import re
 import sys
+import tempfile
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,10 @@ SARIF_VERSION = "2.1.0"
 TOOL_NAME = "skill-verbesserungsanalyse"
 TOOL_INFORMATION_URI = "https://github.com/GermanAutodidact/skill-verbesserungsanalyse"
 
-# Stabiler Regelkatalog (SV-P1-01 .. SV-P3-08) für alle v1.3- und v1.4-Prüfungen.
+TOOL_VERSION = "1.5-DE"
+RULE_COUNT = 27
+
+# Stabiler Regelkatalog (SV-P1-01 .. SV-P3-10) für alle v1.3-, v1.4- und v1.5-Prüfungen.
 RULES: dict[str, dict[str, str]] = {
     # --- P1 (level="error") ---
     "SV-P1-01": {
@@ -320,7 +324,26 @@ RULES: dict[str, dict[str, str]] = {
         ),
         "category": "purpose",
     },
+    "SV-P3-10": {
+        "id": "SV-P3-10",
+        "priority": "P3",
+        "level": "note",
+        "name": "VersionRuleConsistencyAdvisory",
+        "short_description": "Version or rule-registry drift between code, docs, and evals",
+        "full_description": (
+            "Reports inconsistencies between the central TOOL_VERSION / RULES registry and "
+            "version or rule references in SKILL.md, README.md, CHANGELOG.md, "
+            "references/PRUEFKATALOG.md, or evals/cases.json."
+        ),
+        "help_text": (
+            "Synchronize version strings (TOOL_VERSION) and rule counts/IDs across SKILL.md, "
+            "README.md, CHANGELOG.md, references/PRUEFKATALOG.md, and evals/cases.json."
+        ),
+        "category": "consistency",
+    },
 }
+
+assert len(RULES) == RULE_COUNT, f"Expected {RULE_COUNT} rules in RULES, got {len(RULES)}"
 
 _BACKTICK_FILE_RE = re.compile(r"^`([^`]+)`")
 _P1_UNICODE_KINDS = {"unicode-tag-smuggling", "unicode-bidi-override"}
@@ -360,11 +383,12 @@ def _make_finding(
     message: str,
     *,
     default_file: str = "SKILL.md",
+    confidence: str | None = None,
 ) -> dict[str, object]:
     """Constructs a normalized finding dict backed by RULES metadata."""
     meta = RULES[rule_id]
     text = message.strip() or meta["short_description"]
-    return {
+    finding: dict[str, object] = {
         "rule_id": rule_id,
         "priority": meta["priority"],
         "level": meta["level"],
@@ -372,6 +396,9 @@ def _make_finding(
         "line": _normalize_line(line),
         "message": text,
     }
+    if confidence in {"verified", "heuristic"}:
+        finding["confidence"] = confidence
+    return finding
 
 
 def _extract_item_message(item: dict[str, Any], fallback: str) -> str:
@@ -427,13 +454,14 @@ def _collect_security_items(report: dict[str, object]) -> list[Any]:
 def _classify_security_rule(item: dict[str, Any]) -> str:
     """Maps a security issue dict to SV-P1-04/05/06 or SV-P2-10/11."""
     kind = str(item.get("kind", "")).strip().lower()
+    sev = str(item.get("severity", "")).strip().lower()
     if kind in _P1_UNICODE_KINDS or "bidi" in kind or "tag-smuggling" in kind:
         return "SV-P1-04"
     if kind in _P2_UNICODE_KINDS or "zero-width" in kind or "invisible-control" in kind:
         return "SV-P2-10"
     if kind in _P1_SECRET_KINDS or "secret" in kind or "private-key" in kind:
         return "SV-P1-06"
-    if kind in _P2_DESERIALIZE_KINDS or "deserialize" in kind:
+    if kind in _P2_DESERIALIZE_KINDS or "deserialize" in kind or "audit-ok" in kind or sev == "p2":
         return "SV-P2-11"
     return "SV-P1-05"
 
@@ -464,15 +492,121 @@ def _classify_spec_rule(item: dict[str, Any]) -> str:
     return "SV-P3-05"
 
 
+def check_version_and_rule_consistency(
+    target: Path, fm: dict[str, object]
+) -> list[dict[str, object]]:
+    """Checks internal version consistency and (for skill-verbesserungsanalyse) SSOT alignment."""
+    issues: list[dict[str, object]] = []
+    target_path = Path(target)
+    fm_ver_raw = fm.get("version")
+    fm_ver = str(fm_ver_raw).strip() if fm_ver_raw is not None and str(fm_ver_raw).strip() else ""
+
+    # a) General internal consistency (for ANY skill)
+    if fm_ver:
+        evals_file = target_path / "evals" / "cases.json"
+        if evals_file.is_file():
+            try:
+                evals_data = json.loads(evals_file.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                evals_data = None
+            if isinstance(evals_data, dict) and evals_data.get("version") is not None:
+                ev_ver = str(evals_data.get("version", "")).strip()
+                if ev_ver and ev_ver != fm_ver:
+                    issues.append(
+                        {
+                            "file": "evals/cases.json",
+                            "severity": "p3",
+                            "kind": "version-mismatch-evals",
+                            "confidence": "verified",
+                            "message": f"Version in evals/cases.json ({ev_ver}) weicht von SKILL.md ({fm_ver}) ab.",
+                        }
+                    )
+
+        changelog_file = target_path / "CHANGELOG.md"
+        if changelog_file.is_file():
+            changelog_text = changelog_file.read_text(encoding="utf-8", errors="replace")
+            ver_base = re.sub(r"-[A-Za-z]+$", "", fm_ver)
+            if fm_ver not in changelog_text and (not ver_base or ver_base not in changelog_text):
+                issues.append(
+                    {
+                        "file": "CHANGELOG.md",
+                        "severity": "p3",
+                        "kind": "version-missing-in-changelog",
+                        "confidence": "verified",
+                        "message": f"SKILL.md-Version {fm_ver} ist nicht in CHANGELOG.md dokumentiert.",
+                    }
+                )
+
+    # b) Self-consistency for skill-verbesserungsanalyse
+    if str(fm.get("name", "")).strip() == "skill-verbesserungsanalyse":
+        if fm_ver != TOOL_VERSION:
+            issues.append(
+                {
+                    "file": "SKILL.md",
+                    "severity": "p3",
+                    "kind": "version-mismatch-ssot",
+                    "confidence": "verified",
+                    "message": (
+                        f"SKILL.md-Version ({fm_ver or 'fehlt'}) weicht von "
+                        f"TOOL_VERSION ({TOOL_VERSION}) in scripts/audit_sarif.py ab."
+                    ),
+                }
+            )
+
+        for rel_doc in ("README.md", "references/PRUEFKATALOG.md"):
+            doc_path = target_path / rel_doc
+            if doc_path.is_file():
+                doc_text = doc_path.read_text(encoding="utf-8", errors="replace")
+                if TOOL_VERSION not in doc_text:
+                    issues.append(
+                        {
+                            "file": rel_doc,
+                            "severity": "p3",
+                            "kind": "version-drift-doc",
+                            "confidence": "verified",
+                            "message": (
+                                f"`{rel_doc}` referenziert nicht die aktuelle TOOL_VERSION "
+                                f"(`{TOOL_VERSION}`)."
+                            ),
+                        }
+                    )
+
+        pruefkatalog_path = target_path / "references" / "PRUEFKATALOG.md"
+        if pruefkatalog_path.is_file():
+            pk_text = pruefkatalog_path.read_text(encoding="utf-8", errors="replace")
+            missing_rules = [rid for rid in sorted(RULES.keys()) if rid not in pk_text]
+            rule_count_str = f"{len(RULES)}"
+            if missing_rules or rule_count_str not in pk_text:
+                details: list[str] = []
+                if missing_rules:
+                    details.append(f"fehlende Regel-IDs: {', '.join(missing_rules)}")
+                if rule_count_str not in pk_text:
+                    details.append(f"Regelanzahl {rule_count_str} fehlt")
+                issues.append(
+                    {
+                        "file": "references/PRUEFKATALOG.md",
+                        "severity": "p3",
+                        "kind": "rule-registry-drift-doc",
+                        "confidence": "verified",
+                        "message": (
+                            "Regelkatalog-Drift in `references/PRUEFKATALOG.md` "
+                            f"({'; '.join(details)})."
+                        ),
+                    }
+                )
+
+    return issues
+
+
 def extract_findings(report: dict[str, object]) -> list[dict[str, object]]:
     """Extracts normalized findings from an ``audit_directory()`` report dict.
 
-    Gracefully handles missing v1.4 keys via ``.get(...)`` so both v1.3 and v1.4
+    Gracefully handles missing v1.4/v1.5 keys via ``.get(...)`` so v1.3, v1.4, and v1.5
     reports are supported without errors.
 
     Returns a list of dicts with schema:
       ``{"rule_id": str, "priority": "P1"|"P2"|"P3", "level": "error"|"warning"|"note",
-         "file": str, "line": int | None, "message": str}``
+         "file": str, "line": int | None, "message": str}`` (plus optional ``"confidence"``).
     """
     if not isinstance(report, dict):
         return []
@@ -815,9 +949,31 @@ def extract_findings(report: dict[str, object]) -> list[dict[str, object]]:
         if isinstance(entry, dict):
             fpath = entry.get("file", "SKILL.md")
             msg = _extract_item_message(entry, RULES["SV-P3-09"]["short_description"])
-            p3_findings.append(_make_finding("SV-P3-09", fpath, entry.get("line"), msg))
+            conf = str(entry.get("confidence", "")).strip() or None
+            p3_findings.append(
+                _make_finding("SV-P3-09", fpath, entry.get("line"), msg, confidence=conf)
+            )
         elif isinstance(entry, str) and entry.strip():
             p3_findings.append(_make_finding("SV-P3-09", "SKILL.md", None, entry))
+
+    # --- SV-P3-10: Version and rule-registry consistency advisories ---
+    for entry in _iter_list(report.get("consistency_issues", [])):
+        if isinstance(entry, dict):
+            fpath = entry.get("file", "SKILL.md")
+            msg = _extract_item_message(entry, RULES["SV-P3-10"]["short_description"])
+            conf = str(entry.get("confidence", "")).strip() or None
+            p3_findings.append(
+                _make_finding(
+                    "SV-P3-10",
+                    fpath,
+                    entry.get("line"),
+                    msg,
+                    default_file="SKILL.md",
+                    confidence=conf,
+                )
+            )
+        elif isinstance(entry, str) and entry.strip():
+            p3_findings.append(_make_finding("SV-P3-10", "SKILL.md", None, entry, default_file="SKILL.md"))
 
     return p1_findings + p2_findings + p3_findings
 
@@ -828,7 +984,7 @@ def _to_artifact_uri(file_path: str) -> str:
     return urllib.parse.quote(norm, safe="/:@-._~!$&'()*+,;=")
 
 
-def render_sarif(report: dict[str, object], tool_version: str = "1.4.1-DE") -> dict[str, object]:
+def render_sarif(report: dict[str, object], tool_version: str = TOOL_VERSION) -> dict[str, object]:
     """Renders an ``audit_directory()`` report dict as a SARIF 2.1.0 dictionary."""
     findings = extract_findings(report)
 
@@ -838,20 +994,21 @@ def render_sarif(report: dict[str, object], tool_version: str = "1.4.1-DE") -> d
     sarif_rules: list[dict[str, object]] = []
     for rid in rule_ids:
         meta = RULES[rid]
-        sarif_rules.append(
-            {
-                "id": rid,
-                "name": meta["name"],
-                "shortDescription": {"text": meta["short_description"]},
-                "fullDescription": {"text": meta["full_description"]},
-                "defaultConfiguration": {"level": meta["level"]},
-                "properties": {
-                    "priority": meta["priority"],
-                    "category": meta["category"],
-                    "tags": ["skill-audit", meta["priority"], meta["category"]],
-                },
-            }
-        )
+        rule_entry: dict[str, object] = {
+            "id": rid,
+            "name": meta["name"],
+            "shortDescription": {"text": meta["short_description"]},
+            "fullDescription": {"text": meta["full_description"]},
+            "defaultConfiguration": {"level": meta["level"]},
+            "properties": {
+                "priority": meta["priority"],
+                "category": meta["category"],
+                "tags": ["skill-audit", meta["priority"], meta["category"]],
+            },
+        }
+        if meta.get("help_text"):
+            rule_entry["help"] = {"text": meta["help_text"]}
+        sarif_rules.append(rule_entry)
 
     sarif_results: list[dict[str, object]] = []
     for finding in findings:
@@ -860,6 +1017,7 @@ def render_sarif(report: dict[str, object], tool_version: str = "1.4.1-DE") -> d
         message_text = str(finding["message"])
         file_uri = _to_artifact_uri(str(finding["file"]))
         line = _normalize_line(finding.get("line"))
+        meta = RULES.get(rid, {})
 
         physical_location: dict[str, object] = {
             "artifactLocation": {"uri": file_uri},
@@ -872,6 +1030,11 @@ def render_sarif(report: dict[str, object], tool_version: str = "1.4.1-DE") -> d
             "level": level,
             "message": {"text": message_text},
             "locations": [{"physicalLocation": physical_location}],
+            "properties": {
+                "priority": str(finding.get("priority", meta.get("priority", "P3"))),
+                "category": str(meta.get("category", "")),
+                "confidence": str(finding.get("confidence", "verified")),
+            },
         }
         if rid in rule_index_map:
             result_obj["ruleIndex"] = rule_index_map[rid]
@@ -897,7 +1060,7 @@ def render_sarif(report: dict[str, object], tool_version: str = "1.4.1-DE") -> d
 
 
 def _build_mock_report() -> dict[str, object]:
-    """Builds a comprehensive mock audit report covering every P1, P2, and P3 rule."""
+    """Builds a comprehensive mock audit report covering every P1, P2, and P3 rule (27 rules)."""
     return {
         "target": "/tmp/mock-skill",
         "mode": "skill-folder",
@@ -1033,26 +1196,37 @@ def _build_mock_report() -> dict[str, object]:
                 "file": "SKILL.md",
                 "severity": "p3",
                 "kind": "purpose-missing-negative-boundary",
+                "confidence": "heuristic",
                 "message": "`SKILL.md`-`description` fehlt eine explizite Negativ-Abgrenzung (`Don't use`).",
+            },
+        ],
+        "consistency_issues": [
+            {
+                "file": "evals/cases.json",
+                "severity": "p3",
+                "kind": "version-mismatch-evals",
+                "confidence": "verified",
+                "message": "Version in evals/cases.json (1.4-DE) weicht von SKILL.md (1.5-DE) ab.",
             },
         ],
     }
 
 
 def run_self_test() -> int:
-    """Runs comprehensive self-tests for RULES, extract_findings, and render_sarif."""
+    """Runs comprehensive self-tests for RULES, extract_findings, check_version_and_rule_consistency, and render_sarif."""
     failures: list[str] = []
 
     def check(cond: bool, msg: str) -> None:
         if not cond:
             failures.append(msg)
 
-    # 1. Rule catalog integrity
+    # 1. Rule catalog integrity (27 rules: SV-P1-01..06, SV-P2-01..11, SV-P3-01..10)
     expected_rule_ids = {
         *(f"SV-P1-0{i}" for i in range(1, 7)),
         *(f"SV-P2-{i:02d}" for i in range(1, 12)),
-        *(f"SV-P3-0{i}" for i in range(1, 10)),
+        *(f"SV-P3-{i:02d}" for i in range(1, 11)),
     }
+    check(len(RULES) == RULE_COUNT == 27, f"Expected RULE_COUNT=27, got len(RULES)={len(RULES)}")
     check(set(RULES.keys()) == expected_rule_ids, f"RULES keys mismatch: {set(RULES.keys()) ^ expected_rule_ids}")
     for rid, meta in RULES.items():
         check(meta["priority"] in {"P1", "P2", "P3"}, f"{rid}: invalid priority {meta['priority']}")
@@ -1077,9 +1251,9 @@ def run_self_test() -> int:
         "budget_warnings": [],
         "contamination": {"application_families": ["python"], "flagged": False},
     }
-    check(extract_findings(minimal_v13) == [], "Clean v1.3/v1.4 report should yield 0 findings")
+    check(extract_findings(minimal_v13) == [], "Clean v1.3/v1.4/v1.5 report should yield 0 findings")
 
-    # 3. Full mock report covering all 25 rules (P1, P2, P3)
+    # 3. Full mock report covering all 27 rules (P1, P2, P3)
     mock_report = _build_mock_report()
     findings = extract_findings(mock_report)
     found_ids = {str(f["rule_id"]) for f in findings}
@@ -1088,9 +1262,11 @@ def run_self_test() -> int:
         f"Mock report did not cover all rules; missing={expected_rule_ids - found_ids}, extra={found_ids - expected_rule_ids}",
     )
 
+    required_finding_keys = {"rule_id", "priority", "level", "file", "line", "message"}
+    allowed_finding_keys = required_finding_keys | {"confidence"}
     for f in findings:
         check(
-            set(f.keys()) == {"rule_id", "priority", "level", "file", "line", "message"},
+            required_finding_keys.issubset(f.keys()) and set(f.keys()).issubset(allowed_finding_keys),
             f"Unexpected finding keys: {f.keys()}",
         )
         check(f["priority"] in {"P1", "P2", "P3"}, f"Invalid priority in finding: {f}")
@@ -1101,9 +1277,11 @@ def run_self_test() -> int:
             f"Invalid line in finding: {f}",
         )
         check(isinstance(f["message"], str) and len(f["message"]) > 0, f"Empty message in finding: {f}")
+        if "confidence" in f:
+            check(f["confidence"] in {"verified", "heuristic"}, f"Invalid confidence in finding: {f}")
 
     # 4. SARIF 2.1.0 structure & JSON round-trip validation
-    sarif = render_sarif(mock_report, tool_version="1.4-DE")
+    sarif = render_sarif(mock_report)
     serialized = json.dumps(sarif, ensure_ascii=False, indent=2)
     parsed = json.loads(serialized)
 
@@ -1114,7 +1292,7 @@ def run_self_test() -> int:
     run = runs[0]
     driver = run["tool"]["driver"]
     check(driver["name"] == TOOL_NAME, f"Unexpected driver name: {driver['name']}")
-    check(driver["version"] == "1.4-DE", f"Unexpected driver version: {driver['version']}")
+    check(driver["version"] == TOOL_VERSION, f"Unexpected driver version: {driver['version']} (expected {TOOL_VERSION})")
     check(bool(driver.get("informationUri")), "Missing driver.informationUri")
 
     sarif_rules = driver["rules"]
@@ -1130,6 +1308,8 @@ def run_self_test() -> int:
         check(res["ruleId"] in rule_id_set, f"Unknown result ruleId: {res['ruleId']}")
         check(res["level"] in {"error", "warning", "note"}, f"Invalid SARIF level: {res['level']}")
         check(isinstance(res["message"]["text"], str) and res["message"]["text"], "Empty SARIF message.text")
+        props = res.get("properties", {})
+        check(props.get("confidence") in {"verified", "heuristic"}, f"Missing or invalid result confidence: {props}")
         locs = res["locations"]
         check(isinstance(locs, list) and len(locs) == 1, "Result must have 1 location")
         phys = locs[0]["physicalLocation"]
@@ -1155,6 +1335,54 @@ def run_self_test() -> int:
     zero_phys = zero_line_sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
     check("region" not in zero_phys, "line=0 must not produce a SARIF region")
 
+    # 5. Test check_version_and_rule_consistency on matching & mismatched temporary directories
+    with tempfile.TemporaryDirectory() as tmpdir_ok:
+        ok_root = Path(tmpdir_ok)
+        (ok_root / "evals").mkdir()
+        (ok_root / "references").mkdir()
+        (ok_root / "evals" / "cases.json").write_text(
+            json.dumps({"version": TOOL_VERSION, "cases": []}), encoding="utf-8"
+        )
+        (ok_root / "CHANGELOG.md").write_text(f"# Changelog\n\n## [{TOOL_VERSION}]\n", encoding="utf-8")
+        (ok_root / "README.md").write_text(f"# Skill ({TOOL_VERSION})\n", encoding="utf-8")
+        all_rules_str = " ".join(sorted(RULES.keys()))
+        (ok_root / "references" / "PRUEFKATALOG.md").write_text(
+            f"# Prüfkatalog ({TOOL_VERSION}) — {len(RULES)} Regeln\n{all_rules_str}\n",
+            encoding="utf-8",
+        )
+        ok_issues = check_version_and_rule_consistency(
+            ok_root, {"name": "skill-verbesserungsanalyse", "version": TOOL_VERSION}
+        )
+        check(ok_issues == [], f"Expected 0 consistency issues on matching dir, got {ok_issues}")
+
+    with tempfile.TemporaryDirectory() as tmpdir_bad:
+        bad_root = Path(tmpdir_bad)
+        (bad_root / "evals").mkdir()
+        (bad_root / "references").mkdir()
+        (bad_root / "evals" / "cases.json").write_text(
+            json.dumps({"version": "1.2-DE", "cases": []}), encoding="utf-8"
+        )
+        (bad_root / "CHANGELOG.md").write_text("# Changelog\n\n## [1.0-DE]\n", encoding="utf-8")
+        (bad_root / "README.md").write_text("# Skill (1.3-DE)\n", encoding="utf-8")
+        (bad_root / "references" / "PRUEFKATALOG.md").write_text(
+            "# Prüfkatalog (1.3-DE) — 25 Regeln\nSV-P1-01\n", encoding="utf-8"
+        )
+        bad_issues = check_version_and_rule_consistency(
+            bad_root, {"name": "skill-verbesserungsanalyse", "version": "1.4-DE"}
+        )
+        bad_kinds = {str(item.get("kind")) for item in bad_issues}
+        expected_bad_kinds = {
+            "version-mismatch-evals",
+            "version-missing-in-changelog",
+            "version-mismatch-ssot",
+            "version-drift-doc",
+            "rule-registry-drift-doc",
+        }
+        check(
+            expected_bad_kinds.issubset(bad_kinds),
+            f"Expected consistency issue kinds {expected_bad_kinds}, got {bad_kinds}",
+        )
+
     if failures:
         print(f"SELF-TEST FEHLGESCHLAGEN ({len(failures)} Fehler):", file=sys.stderr)
         for fail in failures:
@@ -1179,8 +1407,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--tool-version",
-        default="1.4.1-DE",
-        help="Tool-Version für SARIF tool.driver.version (Standard: 1.4.1-DE).",
+        default=TOOL_VERSION,
+        help=f"Tool-Version für SARIF tool.driver.version (Standard: {TOOL_VERSION}).",
     )
     parser.add_argument(
         "--output",

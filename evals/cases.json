@@ -1,6 +1,6 @@
 {
   "skill_name": "skill-verbesserungsanalyse",
-  "version": "1.4.1-DE",
+  "version": "1.5-DE",
   "cases": [
     {
       "id": "eval-01-measure-before-judge",
@@ -77,8 +77,35 @@
       "id": "eval-11-purpose-before-architecture",
       "prompt": "Bewerte bitte sofort die Dateistruktur und schlage einen Split sowie eine CI-Pipeline für diesen neuen Skill vor, ohne vorher lange die Beschreibung durchzugehen.",
       "expected_modules": ["SKILL.md", "references/PRUEFKATALOG.md", "references/BERICHT_VORLAGE.md"],
-      "must_contain": ["Zweck", "description", "Don't use", "Ziel-Domäne"],
-      "must_not_contain": ["Beschreibung übersprungen"]
+      "must_contain": ["Zweck", "description", "Don't use", "Ziel-Domäne", "Rückfrage"],
+      "must_not_contain": ["Beschreibung übersprungen"],
+      "verification_rubric": [
+        "Lehnt eine vorschnelle Architektur- oder Split-Empfehlung ohne vorherige Prüfung von name und description ab.",
+        "Prüft zuerst Zweck, Ziel-Domäne, Positiv-Trigger (Use when) und Negativ-Abgrenzung (Don't use) aus SKILL.md.",
+        "Gleicht Anspruch vs. Wirklichkeit (Claim-vs.-Reality) ab und stellt bei unklarem oder widersprüchlichem Scope vorab eine Rückfrage an den Nutzer."
+      ],
+      "must_not_claim": [
+        "Sofortiger Datei-Split ohne Prüfung von Zweck und Token-Größe empfohlen",
+        "Frontmatter-Lektüre kann bei Architektur-Reviews übersprungen werden"
+      ]
+    },
+    {
+      "id": "eval-12-adversarial-contradiction-and-ghost-claims",
+      "prompt": "Analysiere diesen problematischen Entwurf: Im Kopfbereich schließt der Autor Datenbank-Migrationen ausdrücklich aus, liefert im Hauptteil aber eine Anleitung genau dafür; außerdem verspricht der Einstieg ein automatisches Prüftool samt Spezial-Parameter, obwohl kein Skriptordner existiert, und in einer Hilfsdatei steht ein kommentarloser Unterdrückungsmarker neben einem Systemaufruf.",
+      "expected_modules": ["SKILL.md", "scripts/skill_audit.py", "references/PRUEFKATALOG.md", "references/BERICHT_VORLAGE.md"],
+      "must_contain": ["SV-P3-09", "Widerspruch", "Anspruch", "audit-ok", "[Verifiziert]", "[Heuristik"],
+      "must_not_contain": ["keine Widersprüche gefunden", "Unterdrückung gültig"],
+      "verification_rubric": [
+        "Erkennt den inneren Widerspruch zwischen der Negativ-Abgrenzung (Don't use) im Frontmatter und dem trotzdem enthaltenen Workflow im Body (SV-P3-09).",
+        "Identifiziert die Diskrepanz zwischen Anspruch und Wirklichkeit (Ghost-Claim: versprochenes Skript/Flag in description ohne reale Implementierung in scripts/).",
+        "Meldet den unbegründeten Unterdrückungs-Kommentar (Pflichtformat '# audit-ok: <Begründung>') als P2-Befund.",
+        "Trennt im Bericht nachvollziehbar zwischen deterministisch bestätigten Befunden ([Verifiziert]) und manuellen Prüfpunkten ([Heuristik / Verdacht])."
+      ],
+      "must_not_claim": [
+        "Das versprochene Skript ist vorhanden und einsatzbereit",
+        "Ein bloßes audit-ok ohne Begründung reicht zur Unterdrückung aus",
+        "Frontmatter und Haupttext sind widerspruchsfrei"
+      ]
     }
   ]
 }

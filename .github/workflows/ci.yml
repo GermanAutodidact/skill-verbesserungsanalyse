@@ -42,14 +42,14 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python3 scripts/skill_audit.py --self-test
 
-      - name: Run strict skill audit (--fail-on p2)
+      - name: Run strict skill audit (--fail-on p3 incl. SSOT version & rule consistency)
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 scripts/skill_audit.py . --fail-on p2
+        run: python3 scripts/skill_audit.py . --fail-on p3
 
       - name: Validate SARIF 2.1.0 export
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 scripts/skill_audit.py . --sarif > /tmp/audit.sarif
-          python3 -c 'import json; d=json.load(open("/tmp/audit.sarif")); assert d["version"]=="2.1.0" and len(d["runs"][0]["tool"]["driver"]["rules"])>=26 and len(d["runs"][0]["results"])==0, d["runs"][0]["results"]; print("OK: SARIF 2.1.0 valid, 0 findings.")'
+          python3 -c 'import json, sys; sys.path.insert(0, "scripts"); import audit_sarif; d=json.load(open("/tmp/audit.sarif")); r=d["runs"][0]; assert d["version"]=="2.1.0" and r["tool"]["driver"]["version"]==audit_sarif.TOOL_VERSION and len(r["tool"]["driver"]["rules"])==audit_sarif.RULE_COUNT and len(r["results"])==0, r["results"]; print(f"OK: SARIF 2.1.0 valid, version={audit_sarif.TOOL_VERSION}, rules={audit_sarif.RULE_COUNT}, 0 findings.")'

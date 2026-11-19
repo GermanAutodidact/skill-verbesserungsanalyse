@@ -2,6 +2,16 @@
 
 Alle nennenswerten Änderungen an `skill-verbesserungsanalyse` werden hier dokumentiert.
 
+## [1.5-DE] – 2026-11-18
+
+### Hinzugefügt & Geschärft (v1.5-DE — Semantisches Zweck-Gate, Evidenz & Security-Transparenz)
+- **Semantischer Claim-vs.-Reality- & Widerspruchs-Check (`SV-P3-09`) + Rückfrage-Pflicht:** Prüft nicht mehr nur die Existenz von Triggern, sondern gleicht **Anspruch vs. Wirklichkeit (Claim-vs.-Reality)** ab (existieren die in `description` versprochenen Skripte, Referenzen, CLI-Flags und Workflows?) und erkennt innere **Widersprüche** (`Don't use for X` im Frontmatter vs. Anleitung für `X` im Body). Neues **Clarification Gate (Rückfrage-Pflicht)** in `SKILL.md` und `references/PRUEFKATALOG.md`, falls Zweck, Ziel-Domäne oder Scope-Grenzen mehrdeutig/widersprüchlich sind.
+- **Versions- & Regel-Konsistenz als 27. Regel (`SV-P3-10`):** Zentrale Single Source of Truth für Version (`1.5-DE`) und Regel-Anzahl (27 stabile Regeln `SV-P1-01`…`SV-P3-10`) mit automatischem Konsistenz-Abgleich zwischen Code-SSOT (`scripts/`), `SKILL.md`, `README.md`, `references/PRUEFKATALOG.md` und `evals/cases.json`.
+- **Erweiterte Security-Scan-Coverage & Begründungspflicht (`# audit-ok: <Begründung>`):** Security- und Secret-Scanning deckt `.py`, `.sh`/`.bash`, `.js`/`.ts`, `.ps1`, `.env`, `.toml`, `.yaml`, `.json` und `.md` ab, weist die **Scan-Coverage** (`scanned_files` vs. `skipped_files`) transparent aus und verlangt für Unterdrückungen eine explizite Begründung (`# audit-ok: <Begründung>` / `// audit-ok: <Begründung>`; bloßes `# audit-ok` wird als P2 gemeldet).
+- **Kontrollierter Git-Staged-Approval-Workflow (Phase 3):** Verpflichtender Check von `git status --short` vor und nach Edits, Anzeige/Zusammenfassung von `git diff --stat`, gezieltes Staging ausschließlich der geänderten Dateien (`git add <datei1> <datei2>` statt blindem `git add -A`) sowie getrennte Freigabe-Checkpoints für Datei-Änderungen → Git-Commit → Git-Push.
+- **Evidenzbasierte Berichtsvorlage (`references/BERICHT_VORLAGE.md`):** Klare Trennung zwischen **`[Verifiziert]`** (deterministisch geprüft/reproduziert) und **`[Heuristik / Verdacht]`** (manuell zu bestätigen) sowie erweitertes P1/P2-Befundschema mit Fundstelle (`Datei:Zeile`), Nachweis/Snippet, Problem & Auswirkung, Diagnose-Sicherheit, Korrekturvorschlag und Regressionstest.
+- **Geschärfte Eval-Matrix (`evals/cases.json`):** `eval-11-purpose-before-architecture` um `verification_rubric` und `must_not_claim` erweitert und neuen Adversarial-Testfall `eval-12-adversarial-contradiction-and-ghost-claims` (12 Szenarien insgesamt, 0 % Prompt-Leakage) ergänzt.
+
 ## [1.4.1-DE] – 2026-11-18
 
 ### Hinzugefügt (Zweck-vor-Architektur-Gate)

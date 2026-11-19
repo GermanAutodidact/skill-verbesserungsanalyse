@@ -633,8 +633,46 @@ def check_skill_prose_and_workflow(skill_text: str) -> list[dict[str, object]]:
     return findings
 
 
+_PURPOSE_ADVERSARIAL_EVAL_RE = re.compile(
+    r"(?:purpose|zweck|contradiction|widerspruch|claim|adversarial|ghost|clarif|rückfrage|rueckfrage|sv-p3-09)",
+    re.I,
+)
+
+
+def _case_tests_purpose_or_adversarial(case: dict[str, object]) -> bool:
+    """Prüft, ob ein Eval-Fall Zweck-vor-Architektur-, Widerspruchs- oder Adversarial-Prüfungen abdeckt."""
+    blobs: list[str] = [
+        str(case.get("id", "")),
+        str(case.get("prompt", "")),
+    ]
+    for key in ("must_contain", "must_not_contain", "must_not_claim", "expected_findings"):
+        val = case.get(key)
+        if isinstance(val, list):
+            blobs.extend(str(x) for x in val)
+    rubric = case.get("verification_rubric")
+    if isinstance(rubric, list):
+        blobs.extend(str(x) for x in rubric)
+    elif isinstance(rubric, dict):
+        blobs.extend(f"{k}:{v}" for k, v in rubric.items())
+    return bool(_PURPOSE_ADVERSARIAL_EVAL_RE.search(" ".join(blobs)))
+
+
+def has_purpose_or_adversarial_eval_case(cases_path: pathlib.Path) -> bool:
+    """Hilfsprüfung, ob evals/cases.json mindestens einen Purpose-/Widerspruchs-/Adversarial-Testfall enthält."""
+    if not cases_path.is_file():
+        return False
+    try:
+        raw_data = json.loads(cases_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    raw_cases = raw_data.get("cases") if isinstance(raw_data, dict) else raw_data
+    if not isinstance(raw_cases, list):
+        return False
+    return any(_case_tests_purpose_or_adversarial(c) for c in raw_cases if isinstance(c, dict))
+
+
 def check_evals_quality(cases_path: pathlib.Path) -> list[dict[str, object]]:
-    """Prüft evals/cases.json auf Negative-Trigger-Abdeckung und Prompt-Leakage."""
+    """Prüft evals/cases.json auf Negative-Trigger-Abdeckung, Prompt-Leakage und v1.5-Rubrik-Felder."""
     if not cases_path.is_file():
         return []
     try:
@@ -657,6 +695,7 @@ def check_evals_quality(cases_path: pathlib.Path) -> list[dict[str, object]]:
         return []
 
     findings: list[dict[str, object]] = []
+    has_purpose_or_adversarial_case = any(_case_tests_purpose_or_adversarial(c) for c in cases)
 
     if len(cases) >= 3:
         has_negative = False
@@ -678,7 +717,9 @@ def check_evals_quality(cases_path: pathlib.Path) -> list[dict[str, object]]:
                 {
                     "severity": "p3",
                     "kind": "eval-no-negative-case",
+                    "confidence": "verified",
                     "case_count": len(cases),
+                    "has_purpose_or_adversarial_case": has_purpose_or_adversarial_case,
                     "message": (
                         f"`{cases_path.name}` enthält {len(cases)} Testfälle, aber keinen "
                         "Negative-Trigger-/Out-of-Scope-Fall (`should_trigger: false`, "
@@ -688,6 +729,65 @@ def check_evals_quality(cases_path: pathlib.Path) -> list[dict[str, object]]:
             )
 
     for case in cases:
+        case_id = str(case.get("id", "<unbekannt>"))
+
+        # v1.5 optional rubric fields validation
+        if "must_not_claim" in case:
+            mnc = case.get("must_not_claim")
+            if not isinstance(mnc, list) or not all(isinstance(x, str) and x.strip() for x in mnc):
+                findings.append(
+                    {
+                        "severity": "p3",
+                        "kind": "eval-invalid-rubric",
+                        "confidence": "verified",
+                        "case_id": case_id,
+                        "field": "must_not_claim",
+                        "has_purpose_or_adversarial_case": has_purpose_or_adversarial_case,
+                        "message": (
+                            f"Eval-Fall `{case_id}` hat ein ungültiges `must_not_claim`-Feld "
+                            "(erwartet: Liste aus nicht-leeren Strings)."
+                        ),
+                    }
+                )
+
+        if "verification_rubric" in case:
+            vr = case.get("verification_rubric")
+            valid_list = isinstance(vr, list) and len(vr) > 0 and all(isinstance(x, str) and x.strip() for x in vr)
+            valid_dict = isinstance(vr, dict) and len(vr) > 0
+            if not (valid_list or valid_dict):
+                findings.append(
+                    {
+                        "severity": "p3",
+                        "kind": "eval-invalid-rubric",
+                        "confidence": "verified",
+                        "case_id": case_id,
+                        "field": "verification_rubric",
+                        "has_purpose_or_adversarial_case": has_purpose_or_adversarial_case,
+                        "message": (
+                            f"Eval-Fall `{case_id}` hat ein ungültiges `verification_rubric`-Feld "
+                            "(erwartet: nicht-leere Liste aus nicht-leeren Strings oder nicht-leeres Objekt)."
+                        ),
+                    }
+                )
+
+        if "expected_findings" in case:
+            ef = case.get("expected_findings")
+            if not isinstance(ef, list) or not all(isinstance(x, (str, dict)) for x in ef):
+                findings.append(
+                    {
+                        "severity": "p3",
+                        "kind": "eval-invalid-rubric",
+                        "confidence": "verified",
+                        "case_id": case_id,
+                        "field": "expected_findings",
+                        "has_purpose_or_adversarial_case": has_purpose_or_adversarial_case,
+                        "message": (
+                            f"Eval-Fall `{case_id}` hat ein ungültiges `expected_findings`-Feld "
+                            "(erwartet: Liste aus Regel-IDs/Strings oder Objekten)."
+                        ),
+                    }
+                )
+
         raw_mc = case.get("must_contain")
         prompt = case.get("prompt")
         if not isinstance(raw_mc, list) or not isinstance(prompt, str) or not prompt.strip():
@@ -710,14 +810,15 @@ def check_evals_quality(cases_path: pathlib.Path) -> list[dict[str, object]]:
         ratio = len(leaked_all) / len(all_terms)
 
         if len(leaked_non_generic) >= 2 and ratio >= 0.6:
-            case_id = str(case.get("id", "<unbekannt>"))
             findings.append(
                 {
                     "severity": "p3",
                     "kind": "eval-prompt-leakage",
+                    "confidence": "heuristic",
                     "case_id": case_id,
                     "leaked_terms": leaked_non_generic,
                     "leak_ratio": round(ratio, 3),
+                    "has_purpose_or_adversarial_case": has_purpose_or_adversarial_case,
                     "message": (
                         f"Eval-Fall `{case_id}` zeigt mögliches Prompt-Leakage: "
                         f"{len(leaked_all)}/{len(all_terms)} ({ratio:.0%}) der `must_contain`-Begriffe "
@@ -741,6 +842,64 @@ _DESC_BUNDLED_SCRIPT_RE = re.compile(
     r"(\b[a-zA-Z0-9_-]+\.(?:py|sh)\b|bundled scripts?|mitgelieferte[ns]?\s+skript)",
     re.I,
 )
+_DESC_REF_CLAIM_RE = re.compile(
+    r"(\breferences/|\bassets/|\bvorlagen?\b|\bchecklisten?\b|\btemplates?\b|\bkatalog\b)",
+    re.I,
+)
+_DESC_EVAL_CLAIM_RE = re.compile(
+    r"(\bevals/|\btest-suite\b|\bbenchmark(?:s|-suite)?\b)",
+    re.I,
+)
+_NEG_TOPIC_EXTRACT_RE = re.compile(
+    r"(?:don't use for|do not use for|not for|not intended for|avoid for|nicht verwenden für|nicht für|nicht geeignet für)\s+([^\n.;]+)",
+    re.I,
+)
+_NEG_TOPIC_STOPWORDS = frozenset(
+    {
+        "general",
+        "unrelated",
+        "other",
+        "allgemeine",
+        "allgemeinen",
+        "sonstige",
+        "sonstigen",
+        "skills",
+        "skill",
+        "prompts",
+        "prompt",
+        "code",
+        "reviews",
+        "review",
+        "pure",
+        "reine",
+        "reinen",
+        "oder",
+        "and",
+        "or",
+        "with",
+        "without",
+        "ohne",
+        "tasks",
+        "aufgaben",
+        "projects",
+        "projekte",
+        "files",
+        "dateien",
+        "folders",
+        "ordner",
+        "management",
+        "editing",
+        "contents",
+        "application",
+        "applications",
+        "software",
+        "engineering",
+    }
+)
+_HEADING_NEGATION_RE = re.compile(
+    r"(?:\bnicht\b|don't|do not|\babgrenzung\b|\banti-pattern|\bout of scope\b|\bgrenzen\b|\bwhen not\b|\bwann nicht\b|\bausschluss\b|\bexclud|\bscope\b|\btrigger)",
+    re.I,
+)
 _DOMAIN_HINTS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("fach-wissens-skill", re.compile(r"\b(synthese|chemie|reaktion|spektroskopie|medizin|recht|physik|mathematik|wissensdatenbank|handbuch|norm)\b", re.I)),
     ("workflow-prompt-skill", re.compile(r"\b(audit|review|verbesserungsanalyse|workflow|prompt|prompts|skill|skills|subagent|orchestrat|bericht|checkliste)\b", re.I)),
@@ -752,8 +911,10 @@ def check_purpose_alignment(
     fm: dict[str, object],
     skill_text: str,
     all_files: set[str],
+    md_texts: dict[str, str] | None = None,
 ) -> dict[str, object]:
-    """Erfasst Zweck, Scope & Ziel-Domäne aus SKILL.md und prüft Konsistenz mit der Architektur."""
+    """Erfasst Zweck, Scope & Ziel-Domäne aus SKILL.md und prüft Claim-vs.-Reality sowie Trigger-Widersprüche."""
+    _ = md_texts  # Optional für Abwärtskompatibilität & zukünftige Cross-Doc-Prüfungen
     name = str(fm.get("name", "") or "").strip()
     desc = str(fm.get("description", "") or "").strip()
     has_pos = bool(_POSITIVE_TRIGGER_RE.search(desc))
@@ -775,10 +936,22 @@ def check_purpose_alignment(
             best_score = score
             inferred_domain = dom_label
 
+    normalized_files = {f.replace("\\", "/") for f in all_files}
     has_scripts = any(
         f.startswith("scripts/") and pathlib.Path(f).suffix.lower() in {".py", ".sh", ".bash", ".js", ".ts"}
-        for f in all_files
+        for f in normalized_files
     )
+    has_refs_or_extra_md = any(
+        f.startswith(("references/", "assets/")) or (f.lower().endswith(".md") and f != "SKILL.md")
+        for f in normalized_files
+    )
+    has_evals = any(f.startswith("evals/") for f in normalized_files)
+
+    claimed_capabilities: list[str] = []
+    verified_capabilities: list[str] = []
+    unbacked_claims: list[str] = []
+    contradictions: list[str] = []
+    needs_user_clarification = False
 
     issues: list[dict[str, object]] = []
     if len(desc) >= 80 and has_pos and not has_neg:
@@ -787,6 +960,7 @@ def check_purpose_alignment(
                 "file": "SKILL.md",
                 "severity": "p3",
                 "kind": "purpose-missing-negative-boundary",
+                "confidence": "heuristic",
                 "message": (
                     "`SKILL.md`-`description` enthält Positiv-Trigger, aber keine explizite Negativ-Abgrenzung "
                     "(z. B. `Don't use for ...` / `Nicht verwenden für ...`) — erhöht das Risiko für Fehl-Trigger "
@@ -794,15 +968,135 @@ def check_purpose_alignment(
                 ),
             }
         )
-    if _DESC_BUNDLED_SCRIPT_RE.search(desc) and not has_scripts:
+
+    if _DESC_BUNDLED_SCRIPT_RE.search(desc):
+        claimed_capabilities.append("bundled_scripts")
+        if has_scripts:
+            verified_capabilities.append("bundled_scripts")
+        else:
+            unbacked_claims.append("bundled_scripts")
+            issues.append(
+                {
+                    "file": "SKILL.md",
+                    "severity": "p3",
+                    "kind": "purpose-script-mismatch",
+                    "confidence": "verified",
+                    "message": (
+                        "`SKILL.md`-`description` kündigt ein konkretes/mitgeliefertes Skript an, "
+                        "im Ordner `scripts/` existiert jedoch keine ausführbare Skriptdatei."
+                    ),
+                }
+            )
+    elif has_scripts:
+        verified_capabilities.append("bundled_scripts")
+
+    # a) Ghost file / folder claim (purpose-unbacked-capability-claim)
+    ref_claim_m = _DESC_REF_CLAIM_RE.search(desc)
+    eval_claim_m = _DESC_EVAL_CLAIM_RE.search(desc)
+    missing_bundle_claims: list[str] = []
+
+    if ref_claim_m:
+        claimed_capabilities.append("references_or_templates")
+        if has_refs_or_extra_md:
+            verified_capabilities.append("references_or_templates")
+        else:
+            unbacked_claims.append(f"references_or_templates ({ref_claim_m.group(0)})")
+            missing_bundle_claims.append(f"Referenzen/Vorlagen (`{ref_claim_m.group(0)}`)")
+    elif has_refs_or_extra_md:
+        verified_capabilities.append("references_or_templates")
+
+    if eval_claim_m:
+        claimed_capabilities.append("evals_suite")
+        if has_evals:
+            verified_capabilities.append("evals_suite")
+        else:
+            unbacked_claims.append(f"evals_suite ({eval_claim_m.group(0)})")
+            missing_bundle_claims.append(f"Eval-/Benchmark-Suite (`{eval_claim_m.group(0)}`)")
+    elif has_evals:
+        verified_capabilities.append("evals_suite")
+
+    if missing_bundle_claims:
         issues.append(
             {
                 "file": "SKILL.md",
                 "severity": "p3",
-                "kind": "purpose-script-mismatch",
+                "kind": "purpose-unbacked-capability-claim",
+                "confidence": "verified",
+                "unbacked_claims": list(unbacked_claims),
                 "message": (
-                    "`SKILL.md`-`description` kündigt ein konkretes/mitgeliefertes Skript an, "
-                    "im Ordner `scripts/` existiert jedoch keine ausführbare Skriptdatei."
+                    "`SKILL.md`-`description` verspricht mitgelieferte Ressourcen ("
+                    + ", ".join(missing_bundle_claims)
+                    + "), die im Skill-Bundle real nicht existieren (Claim-vs.-Reality-Divergenz)."
+                ),
+            }
+        )
+
+    # b) Trigger vs. Body Contradiction (purpose-trigger-contradiction)
+    excluded_phrases: list[tuple[str, tuple[str, ...]]] = []
+    for m in _NEG_TOPIC_EXTRACT_RE.finditer(desc):
+        clause = m.group(1).strip()
+        for segment in re.split(r"[,;/]|\b(?:or|oder|and|und|nor|sowie)\b", clause, flags=re.I):
+            words = [
+                w.lower()
+                for w in re.findall(r"[A-Za-zÄÖÜäöüß0-9_-]{5,}", segment)
+                if w.lower() not in _NEG_TOPIC_STOPWORDS
+            ]
+            if words:
+                excluded_phrases.append((segment.strip(), tuple(words)))
+
+    if excluded_phrases:
+        prose_lines = _strip_frontmatter_and_fences_preserve_lines(skill_text)
+        for line_no, line in enumerate(prose_lines, start=1):
+            hm = re.match(r"^(#{2,3})\s+(.+)$", line.strip())
+            if not hm:
+                continue
+            heading_text = hm.group(2).strip()
+            if _HEADING_NEGATION_RE.search(heading_text):
+                continue
+            heading_words = {w.lower() for w in re.findall(r"[A-Za-zÄÖÜäöüß0-9_-]{5,}", heading_text)}
+            if not heading_words:
+                continue
+            for raw_seg, topic_tokens in excluded_phrases:
+                matched_tokens = [tok for tok in topic_tokens if tok in heading_words]
+                if (len(topic_tokens) >= 2 and len(matched_tokens) >= 2) or (
+                    len(topic_tokens) == 1 and len(matched_tokens) == 1
+                ):
+                    contradiction_desc = (
+                        f"Negativ-Trigger schließt `{raw_seg}` aus, aber Überschrift `{hm.group(0)}` "
+                        f"(Zeile {line_no}) lehrt genau diesen Workflow."
+                    )
+                    contradictions.append(contradiction_desc)
+                    issues.append(
+                        {
+                            "file": "SKILL.md",
+                            "line": line_no,
+                            "severity": "p3",
+                            "kind": "purpose-trigger-contradiction",
+                            "confidence": "verified",
+                            "excluded_topic": raw_seg,
+                            "heading": hm.group(0),
+                            "message": (
+                                f"Widerspruch zwischen Negativ-Trigger und Skill-Inhalt: `description` schließt "
+                                f"`{raw_seg}` explizit aus, aber `{hm.group(0)}` (Zeile {line_no}) definiert dafür "
+                                "einen eigenen Positiv-Workflow."
+                            ),
+                        }
+                    )
+                    break
+
+    # c) Ambiguous / Under-specified Purpose (purpose-ambiguous-clarify-needed)
+    if len(desc) < 45 or (inferred_domain == "allgemein" and not has_pos):
+        needs_user_clarification = True
+        issues.append(
+            {
+                "file": "SKILL.md",
+                "severity": "p3",
+                "kind": "purpose-ambiguous-clarify-needed",
+                "confidence": "heuristic",
+                "message": (
+                    "`SKILL.md`-`description` ist zu kurz oder mehrdeutig, um Zweck, Ziel-Domäne und "
+                    "erwartete Architektur belastbar abzuleiten — vor strukturellen Umbau-Empfehlungen "
+                    "gezielt Rückfrage an den Nutzer stellen."
                 ),
             }
         )
@@ -815,12 +1109,17 @@ def check_purpose_alignment(
         "negative_boundary_excerpt": neg_excerpt,
         "inferred_domain": inferred_domain,
         "has_bundled_scripts": has_scripts,
+        "claimed_capabilities": claimed_capabilities,
+        "verified_capabilities": verified_capabilities,
+        "unbacked_claims": unbacked_claims,
+        "contradictions": contradictions,
+        "needs_user_clarification": needs_user_clarification,
         "issues": issues,
     }
 
 
 def run_self_test() -> int:
-    """Führt umfassende Selbsttests für alle 5 öffentlichen Qualitätsprüfungen aus."""
+    """Führt umfassende Selbsttests für alle 6 öffentlichen Qualitätsprüfungen + Adversarial Corpus aus."""
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
 
@@ -1069,11 +1368,20 @@ def run_self_test() -> int:
         eq_bad = check_evals_quality(evals_bad)
         eq_kinds = [f["kind"] for f in eq_bad]
         assert eq_kinds == ["eval-no-negative-case", "eval-prompt-leakage"], eq_bad
+        assert eq_bad[0]["confidence"] == "verified", eq_bad
+        assert eq_bad[1]["confidence"] == "heuristic", eq_bad
         assert eq_bad[1]["case_id"] == "case-1", eq_bad
 
-        # Good evals with negative trigger (tested via should_trigger, expected_modules=[], and id marker)
+        # Good evals with negative trigger + v1.5 rubric fields
         for neg_case in (
-            {"id": "c-neg", "prompt": "Irrelevant", "should_trigger": False, "must_contain": []},
+            {
+                "id": "c-neg",
+                "prompt": "Irrelevant",
+                "should_trigger": False,
+                "must_contain": [],
+                "must_not_claim": ["Auto-Fix ausgeführt"],
+                "verification_rubric": ["Zweck vor Architektur geprüft", "Widerspruch erkannt"],
+            },
             {"id": "c-empty", "prompt": "Irrelevant", "expected_modules": [], "must_contain": []},
             {"id": "eval-out-of-scope-1", "prompt": "Irrelevant", "expected_modules": ["SKILL.md"]},
         ):
@@ -1092,6 +1400,30 @@ def run_self_test() -> int:
             )
             assert check_evals_quality(evals_ok) == [], f"neg_case={neg_case}"
 
+        # Malformed v1.5 rubric fields
+        evals_bad_rubric = root / "evals_bad_rubric.json"
+        evals_bad_rubric.write_text(
+            json.dumps(
+                {
+                    "cases": [
+                        {
+                            "id": "c-rubric-bad",
+                            "prompt": "Prüfe den Zweck und Widerspruch im Skill.",
+                            "expected_modules": ["SKILL.md"],
+                            "must_contain": ["SV-P3-09"],
+                            "must_not_claim": "not-a-list",
+                            "verification_rubric": [],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        eq_rubric = check_evals_quality(evals_bad_rubric)
+        assert [f["kind"] for f in eq_rubric] == ["eval-invalid-rubric", "eval-invalid-rubric"], eq_rubric
+        assert all(f["confidence"] == "verified" and f["has_purpose_or_adversarial_case"] is True for f in eq_rubric)
+        assert has_purpose_or_adversarial_eval_case(evals_bad_rubric) is True
+
         # --- 6. check_purpose_alignment ---
         p_ok = check_purpose_alignment(
             {
@@ -1107,6 +1439,9 @@ def run_self_test() -> int:
         assert p_ok["has_positive_trigger"] is True
         assert p_ok["has_negative_boundary"] is True
         assert p_ok["inferred_domain"] == "workflow-prompt-skill", p_ok
+        assert p_ok["needs_user_clarification"] is False, p_ok
+        assert p_ok["unbacked_claims"] == [], p_ok
+        assert p_ok["contradictions"] == [], p_ok
         assert p_ok["issues"] == [], p_ok
 
         p_bad = check_purpose_alignment(
@@ -1123,8 +1458,109 @@ def run_self_test() -> int:
         p_bad_kinds = {x["kind"] for x in p_bad["issues"]}
         assert "purpose-missing-negative-boundary" in p_bad_kinds, p_bad
         assert "purpose-script-mismatch" in p_bad_kinds, p_bad
+        assert all("confidence" in x for x in p_bad["issues"]), p_bad
 
-    print("OK: audit_quality.py Selbsttest (alle 6 Module inkl. Zweck-Abgleich & Edge-Cases) bestanden.")
+        # --- 7. Adversarial Skill Testing Corpus ---
+        # 1) Ghost-Feature Skill: claims auto_fix.py and evals/ benchmark suite, but bundle has only SKILL.md
+        adv_ghost = check_purpose_alignment(
+            {
+                "name": "ghost-feature-skill",
+                "description": (
+                    "Automated validator with bundled auto_fix.py CLI and evals/ benchmark suite. "
+                    "Use when validating skills. Don't use for application code."
+                ),
+            },
+            "# Ghost Feature Skill\nPure prose without any bundled scripts or evals.",
+            {"SKILL.md"},
+        )
+        adv_ghost_kinds = {x["kind"] for x in adv_ghost["issues"]}
+        assert "purpose-script-mismatch" in adv_ghost_kinds, adv_ghost
+        assert "purpose-unbacked-capability-claim" in adv_ghost_kinds, adv_ghost
+        assert adv_ghost["unbacked_claims"], adv_ghost
+
+        # 2) Contradictory-Trigger Skill: description excludes Kubernetes cluster deployment, body teaches it
+        adv_contra = check_purpose_alignment(
+            {
+                "name": "sql-migrator",
+                "description": (
+                    "Use for database SQL schema migrations. "
+                    "Don't use for Kubernetes cluster deployment."
+                ),
+            },
+            (
+                "# SQL Migrator\n"
+                "## Database Schema Migration\n"
+                "Run SQL migrations.\n"
+                "## Kubernetes Cluster Deployment Workflow\n"
+                "Deploy Helm charts to the cluster.\n"
+            ),
+            {"SKILL.md"},
+        )
+        adv_contra_kinds = {x["kind"] for x in adv_contra["issues"]}
+        assert "purpose-trigger-contradiction" in adv_contra_kinds, adv_contra
+        assert len(adv_contra["contradictions"]) == 1, adv_contra
+
+        # 3) Under-specified / Ambiguous Skill: tiny vague description -> needs_user_clarification
+        adv_ambig = check_purpose_alignment(
+            {
+                "name": "misc-helper",
+                "description": "Helper for stuff.",
+            },
+            "# Helper\nDoes various things.",
+            {"SKILL.md"},
+        )
+        adv_ambig_kinds = {x["kind"] for x in adv_ambig["issues"]}
+        assert adv_ambig["needs_user_clarification"] is True, adv_ambig
+        assert "purpose-ambiguous-clarify-needed" in adv_ambig_kinds, adv_ambig
+
+        # 4) Fake-Optimization / Regression Skill: multi-step workflow without verification + README-tier + contamination + prompt-leaking eval
+        adv_fake_text = (
+            "---\n"
+            "name: fake-opt-skill\n"
+            "description: Optimizes general repositories across stacks. Use when optimizing code. Don't use for hardware.\n"
+            "---\n"
+            "# Fake Optimization Skill\n"
+            "## Installation\n"
+            "Install dependencies.\n"
+            "### Step 1: Parse\n"
+            "Read input.\n"
+            "### Step 2: Rewrite\n"
+            "Modify everything.\n"
+            "### Step 3: Save\n"
+            "Write files to disk.\n"
+        )
+        adv_fake_prose = check_skill_prose_and_workflow(adv_fake_text)
+        adv_fake_prose_kinds = {x["kind"] for x in adv_fake_prose}
+        assert "readme-tier-in-skill" in adv_fake_prose_kinds, adv_fake_prose
+        assert "workflow-missing-verification" in adv_fake_prose_kinds, adv_fake_prose
+
+        adv_fake_contam = analyze_contamination(
+            "fake-opt-skill",
+            adv_fake_text,
+            ["python", "typescript", "rust"],
+        )
+        assert adv_fake_contam["flagged"] is True, adv_fake_contam
+
+        adv_fake_eval_path = root / "adv_fake_evals.json"
+        adv_fake_eval_path.write_text(
+            json.dumps(
+                {
+                    "cases": [
+                        {
+                            "id": "leak-1",
+                            "prompt": "Erstelle eine Architektur-Transformation und Performance-Kalibrierung.",
+                            "expected_modules": ["SKILL.md"],
+                            "must_contain": ["Architektur-Transformation", "Performance-Kalibrierung"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        adv_fake_eval_issues = check_evals_quality(adv_fake_eval_path)
+        assert any(x["kind"] == "eval-prompt-leakage" for x in adv_fake_eval_issues), adv_fake_eval_issues
+
+    print("OK: audit_quality.py Selbsttest (alle 7 Module inkl. Zweck-Abgleich, Rubrik-Evals & Adversarial Corpus) bestanden.")
     return 0
 
 

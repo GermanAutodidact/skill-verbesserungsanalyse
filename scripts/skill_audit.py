@@ -819,9 +819,15 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
         "negative_boundary_excerpt": "",
         "inferred_domain": "allgemein",
         "has_bundled_scripts": False,
+        "claimed_capabilities": [],
+        "verified_capabilities": [],
+        "unbacked_claims": [],
+        "contradictions": [],
+        "needs_user_clarification": False,
         "issues": [],
     }
     purpose_issues: list[dict[str, object]] = []
+    consistency_issues: list[dict[str, object]] = []
     contamination: dict[str, object] = {
         "application_families": [],
         "auxiliary_families": [],
@@ -831,6 +837,7 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
     }
     safety_present = False
     safety_note = "SKILL.md nicht vorhanden"
+    fm: dict[str, object] = {}
     if skill_md.is_file():
         s_text = md_texts.get("SKILL.md", skill_md.read_text(encoding="utf-8", errors="replace"))
         fm, _ = parse_frontmatter(s_text)
@@ -861,20 +868,26 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
         )
         safety_present, safety_note = detect_safety_clause(s_text)
         spec_issues = audit_quality.validate_agentskills_spec(fm, target)
-        purpose_report = audit_quality.check_purpose_alignment(fm, s_text, all_files)
+        purpose_report = audit_quality.check_purpose_alignment(fm, s_text, all_files, md_texts=md_texts)
         purpose_issues = list(purpose_report.get("issues", []))  # type: ignore[arg-type]
         skill_code_langs = [lang for lang, _, _ in iter_fenced_blocks(s_text) if lang]
         contamination = audit_quality.analyze_contamination(str(fm.get("name", "")), s_text, skill_code_langs)
         prose_workflow_issues = audit_quality.check_skill_prose_and_workflow(s_text)
+        fm_for_consistency = dict(fm)
+        if version and not fm_for_consistency.get("version"):
+            fm_for_consistency["version"] = version
+        consistency_issues = audit_sarif.check_version_and_rule_consistency(target, fm_for_consistency)
 
-    # Evals schema, expected_modules & v1.4 quality/leakage validation
+    # Evals schema, expected_modules & v1.4/v1.5 quality/leakage/rubric validation
     evals_issues = validate_evals(target, all_files, all_basenames)
     evals_quality_issues = audit_quality.check_evals_quality(target / "evals" / "cases.json")
 
-    # v1.4 Security (Unicode smuggling, Bidi, AST script security, secrets) & Orphan files
+    # v1.4/v1.5 Security (Unicode smuggling, Bidi, AST/Shell/JS/TS/PS1/Env/Toml security, coverage) & Orphan files
     sorted_all_files = sorted(all_files)
-    unicode_smuggling_issues = audit_security.scan_unicode_smuggling(target, sorted_all_files)
-    script_security_issues = audit_security.scan_script_security(target, sorted_all_files)
+    sec_res = audit_security.scan_repository_security(target, sorted_all_files)
+    unicode_smuggling_issues = list(sec_res.get("unicode_smuggling_issues", []))  # type: ignore[arg-type]
+    script_security_issues = list(sec_res.get("script_security_issues", []))  # type: ignore[arg-type]
+    security_coverage = dict(sec_res.get("security_coverage", {}))  # type: ignore[arg-type]
     orphan_files = audit_quality.find_orphan_files(target, all_files, md_texts)
 
     # Hygiene (differentiated for Mode A: skill dir vs Mode B: git repo)
@@ -902,6 +915,7 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
     report: dict[str, object] = {
         "target": str(target),
         "mode": "git-repo" if is_git_repo else "skill-folder",
+        "tool_version": audit_sarif.TOOL_VERSION,
         "summary": {
             "markdown_files": len(md_files),
             "non_md_files": non_md_files,
@@ -920,8 +934,11 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
             "portability_and_sandbox_issue_count": len(portability_and_sandbox_issues),
             "unicode_smuggling_issue_count": len(unicode_smuggling_issues),
             "script_security_issue_count": len(script_security_issues),
+            "security_scanned_files": int(security_coverage.get("scanned_count", 0)),
+            "security_skipped_files": int(security_coverage.get("skipped_count", 0)),
             "spec_issue_count": len(spec_issues),
             "purpose_issue_count": len(purpose_issues),
+            "consistency_issue_count": len(consistency_issues),
             "contamination_flagged": bool(contamination.get("flagged")),
             "prose_workflow_issue_count": len(prose_workflow_issues),
             "evals_quality_issue_count": len(evals_quality_issues),
@@ -939,6 +956,8 @@ def audit_directory(target: pathlib.Path, include_all_sections: bool = False) ->
         "frontmatter": frontmatter_report,
         "purpose": purpose_report,
         "purpose_issues": purpose_issues,
+        "consistency_issues": consistency_issues,
+        "security_coverage": security_coverage,
         "inventory": inventory,
         "section_breakdowns": section_breakdowns,
         "broken_links": broken_links[:50],
@@ -992,7 +1011,7 @@ def evaluate_fail_on(report: dict[str, object], threshold: str) -> list[str]:
     if threshold == "p1":
         return reasons
 
-    # P2: Defekte Links, tote Verweise, Orphan-Files, Format-/Mermaid-Lint, Evals-Schema, Spec, Junk, Zero-Width/Pickle
+    # P2: Defekte Links, tote Verweise, Orphan-Files, Format-/Mermaid-Lint, Evals-Schema, Spec, Junk, Zero-Width/Pickle/audit-ok
     if s["broken_link_count"]:
         reasons.append(f"P2 [SV-P2-01]: {s['broken_link_count']} defekte Links/Anker")
     if s["dead_local_reference_count"]:
@@ -1017,11 +1036,11 @@ def evaluate_fail_on(report: dict[str, object], threshold: str) -> list[str]:
         reasons.append(f"P2 [SV-P2-10]: {len(uni_p2)} unsichtbare Zero-Width-/Steuerzeichen")
     sec_p2 = [x for x in report.get("script_security_issues", []) if x.get("severity") == "p2"]
     if sec_p2:
-        reasons.append(f"P2 [SV-P2-11]: {len(sec_p2)} unsichere Deserialisierungs-Aufrufe (pickle/marshal)")
+        reasons.append(f"P2 [SV-P2-11]: {len(sec_p2)} P2-Skript-Security-Befunde (Deserialisierung / unbegründeter audit-ok-Marker)")
     if threshold == "p2":
         return reasons
 
-    # P3: Frontmatter-Limits/Trigger, Hardcoded-Pfade, Budget-Warnungen, Spec-Advisories, Contamination, Workflow, Eval-Qualität, Purpose
+    # P3: Frontmatter-Limits/Trigger, Hardcoded-Pfade, Budget-Warnungen, Spec-Advisories, Contamination, Workflow, Eval-Qualität, Purpose, Consistency
     if fm.get("exists"):
         if not fm.get("description_within_1024"):
             reasons.append("P3 [SV-P3-01]: SKILL.md description fehlt oder > 1024 Zeichen")
@@ -1043,6 +1062,8 @@ def evaluate_fail_on(report: dict[str, object], threshold: str) -> list[str]:
         reasons.append(f"P3 [SV-P3-08]: {s['evals_quality_issue_count']} Eval-Qualitäts-/Leakage-Hinweis(e)")
     if s.get("purpose_issue_count"):
         reasons.append(f"P3 [SV-P3-09]: {s['purpose_issue_count']} Purpose-/Scope-Abgleich-Hinweis(e)")
+    if s.get("consistency_issue_count"):
+        reasons.append(f"P3 [SV-P3-10]: {s['consistency_issue_count']} Versions-/Regel-Konsistenz-Hinweis(e)")
     return reasons
 
 
@@ -1133,7 +1154,16 @@ def render_markdown(report: dict[str, object]) -> str:
             f"- ℹ️ Zusätzlich {s['external_or_archive_reference_count']} externe/Zielprojekt-/Quell-Archiv-Pfade ausgeblendet."
         )
 
-    lines.extend(["", "## 5. Format-Lint, Portabilität, Sandbox & Security", ""])
+    cov = report.get("security_coverage") or {}
+    lines.extend(
+        [
+            "",
+            "## 5. Format-Lint, Portabilität, Sandbox & Security",
+            "",
+            f"- **Security-Scan-Coverage:** {cov.get('scanned_count', s.get('security_scanned_files', 0))} Dateien geprüft, "
+            f"{cov.get('skipped_count', s.get('security_skipped_files', 0))} übersprungen.",
+        ]
+    )
     if report["format_issues"]:
         for fi in report["format_issues"]:
             lines.append(f"- `{fi['file']}:{fi['line']}` [{fi['kind']}]: `{fi['snippet']}`")
@@ -1154,12 +1184,13 @@ def render_markdown(report: dict[str, object]) -> str:
         lines.append("- ✅ Keine Unicode-Smuggling-, Bidi-Override- oder Zero-Width-Zeichen gefunden.")
     if report.get("script_security_issues"):
         for si in report["script_security_issues"]:
+            conf_tag = "Verifiziert" if si.get("confidence", "verified") == "verified" else "Heuristik"
             lines.append(
-                f"- ❌ Security `{si['file']}:{si['line']}` [{si['severity'].upper()} / {si['kind']}]: "
+                f"- ❌ Security `{si['file']}:{si['line']}` [{si['severity'].upper()} / {si['kind']} / {conf_tag}]: "
                 f"{si['message']} (`{si['snippet']}`)"
             )
     else:
-        lines.append("- ✅ Keine AST-Skript-Risiken, gefährlichen Shell-Muster oder Hardcoded Secrets gefunden.")
+        lines.append("- ✅ Keine AST-Skript-Risiken, gefährlichen Shell-/JS-/PS1-Muster, unbegründeten `audit-ok`-Marker oder Hardcoded Secrets gefunden.")
     if report["long_lines"]:
         for ll in report["long_lines"][:10]:
             lines.append(f"- ℹ️ Überlange Zeile (>1.500 Z.): `{ll['file']}:{ll['line']}` ({ll['length']:,} Zeichen)")
@@ -1167,9 +1198,15 @@ def render_markdown(report: dict[str, object]) -> str:
     lines.extend(["", "## 6. Spec, Qualität, Contamination & Duplikate", ""])
     if report.get("purpose_issues"):
         for pui in report["purpose_issues"]:
-            lines.append(f"- ⚠️ Zweck/Architektur (`SV-P3-09` / {pui['kind']}): {pui['message']}")
+            conf_tag = "Verifiziert" if pui.get("confidence", "verified") == "verified" else "Heuristik"
+            lines.append(f"- ⚠️ Zweck/Architektur (`SV-P3-09` / {pui['kind']} / [{conf_tag}]): {pui['message']}")
     else:
         lines.append("- ✅ Zweck-, Scope- & Architektur-Abgleich (`SV-P3-09`) ohne Befund.")
+    if report.get("consistency_issues"):
+        for ci in report["consistency_issues"]:
+            lines.append(f"- ⚠️ Versions-/Regel-Konsistenz (`SV-P3-10` / {ci.get('kind', 'consistency')}): {ci['message']}")
+    else:
+        lines.append("- ✅ Versions- & Regel-Konsistenz (`SV-P3-10`) ohne Befund.")
     if report.get("spec_issues"):
         for spi in report["spec_issues"]:
             icon = "❌" if spi.get("severity") == "p2" else "⚠️"
@@ -1216,6 +1253,7 @@ def render_report_draft(report: dict[str, object]) -> str:
     fm = report["frontmatter"]
     s = report["summary"]
     purpose = report.get("purpose") or {}
+    cov = report.get("security_coverage") or {}
     ver = fm.get("version") or "?"
     unclosed_n = len(s["unclosed_code_blocks"])
     sec_n = int(s.get("unicode_smuggling_issue_count", 0)) + int(s.get("script_security_issue_count", 0))
@@ -1233,7 +1271,12 @@ def render_report_draft(report: dict[str, object]) -> str:
     )
     p_scripts = "ja (`scripts/` vorhanden)" if purpose.get("has_bundled_scripts") else "nein (reiner Prompt-/Doku-Skill)"
     purpose_issues = report.get("purpose_issues") or []
-    p_check = "✅ unauffällig" if not purpose_issues else f"⚠️ {len(purpose_issues)} Hinweis(e) (siehe P3)"
+    p_check = "✅ unauffällig (`[Verifiziert]`)" if not purpose_issues else f"⚠️ {len(purpose_issues)} Hinweis(e) (siehe P3)"
+    p_clarify = (
+        "⚠️ Rückfrage an Nutzer empfohlen (Zweck/Domäne mehrdeutig)"
+        if purpose.get("needs_user_clarification")
+        else "✅ Keine Rückfrage nötig (Zweck & Abgrenzung eindeutig)"
+    )
     lines = [
         f"# Verbesserungsanalyse: `{name}` (v{ver})",
         "",
@@ -1242,6 +1285,9 @@ def render_report_draft(report: dict[str, object]) -> str:
         f"**{s['mermaid_issue_count']} Mermaid-Befunde**, **{s['format_issue_count']} Formatierungsfehler**, "
         f"**{s['dead_local_reference_count']} tote lokale Verweise** und **{orphan_n} verwaiste Dateien** "
         f"(MD ≈ {s['total_approx_tokens']:,} Tokens, Bundle {s['bundle_total_bytes']:,} Bytes). Fachliche Prüfung (P1) siehe unten.",
+        "",
+        "> [!IMPORTANT]",
+        "> **Diagnose-Sicherheit:** Jeder Befund ist als **`[Verifiziert]`** (deterministisch per Skript, AST, Link-Check oder Reproduktion bestätigt) oder **`[Heuristik / Verdacht]`** (vor Eingriff manuell zu prüfen) gekennzeichnet.",
         "",
         "## Zweck, Scope & Ziel-Domäne (verifiziert vor Architektur-Bewertung)",
         "",
@@ -1252,7 +1298,8 @@ def render_report_draft(report: dict[str, object]) -> str:
         f"| **Kernzweck (`description`)** | {p_desc} |",
         f"| **Trigger-Abgrenzung (`Don't use`)** | {p_neg} |",
         f"| **Mitgelieferte Skripte** | {p_scripts} |",
-        f"| **Zweck-vs.-Architektur-Check (`SV-P3-09`)** | {p_check} |",
+        f"| **Claim-vs.-Reality & Widerspruchs-Check (`SV-P3-09`)** | {p_check} |",
+        f"| **Rückfrage-Gate (Clarification Gate)** | {p_clarify} |",
         "",
         "## Bestandsaufnahme (Größe ≈ Tokens)",
         "",
@@ -1273,6 +1320,9 @@ def render_report_draft(report: dict[str, object]) -> str:
     lines.extend(
         [
             "",
+            f"- **Security-Scan-Coverage:** {cov.get('scanned_count', s.get('security_scanned_files', 0))} Dateien geprüft, "
+            f"{cov.get('skipped_count', s.get('security_skipped_files', 0))} übersprungen.",
+            "",
             "> [!NOTE]",
             f"> {budget_note}",
             "",
@@ -1280,53 +1330,54 @@ def render_report_draft(report: dict[str, object]) -> str:
             "",
             "## 🔴 Priorität 1: Fachliche Fehler, Bugs & Security (verifiziert)",
             "",
-            "| # | Fundstelle | Problem | Korrektur |",
-            "|---|---|---|---|",
+            "| # | Fundstelle (`Datei:Zeile`) | Konkreter Nachweis (Evidenz/Snippet) | Problem & Auswirkung (inkl. Regel-ID) | Diagnose-Sicherheit | Korrekturvorschlag | Regressionstest |",
+            "|---|---|---|---|---|---|---|",
         ]
     )
     p1_rows: list[str] = []
     sandbox_hits = [x for x in report["portability_and_sandbox_issues"] if x["kind"] == "sandbox-anti-pattern"]
     for sh in sandbox_hits:
         p1_rows.append(
-            f"| F{len(p1_rows) + 1} | `{sh['file']}:{sh['line']}` | Sandbox-Anti-Pattern (`{sh['snippet']}`) | Auf User-Space-Tool (`uv`/`venv`/`npm`) umstellen |"
+            f"| F{len(p1_rows) + 1} | `{sh['file']}:{sh['line']}` | `{sh['snippet']}` | Sandbox-Anti-Pattern (`SV-P1-03`): schlägt in Container ohne root fehl | `[Verifiziert]` | Auf User-Space-Tool (`uv`/`venv`/`npm`) umstellen | `skill_audit.py --fail-on p1` |"
         )
     for ui in [x for x in report.get("unicode_smuggling_issues", []) if x.get("severity") == "p1"]:
         p1_rows.append(
-            f"| F{len(p1_rows) + 1} | `{ui['file']}:{ui['line']}` | Unicode-Smuggling `{ui['codepoint']}` ({ui['kind']}) | Unsichtbare Steuer-/Bidi-Zeichen entfernen |"
+            f"| F{len(p1_rows) + 1} | `{ui['file']}:{ui['line']}` | `{ui['codepoint']}` (`{ui['snippet']}`) | Unicode-Smuggling (`SV-P1-04` / {ui['kind']}): versteckte Prompt-Manipulation | `[Verifiziert]` | Unsichtbare Steuer-/Bidi-Zeichen entfernen | `skill_audit.py --fail-on p1` |"
         )
     for si in [x for x in report.get("script_security_issues", []) if x.get("severity") == "p1"]:
+        conf_label = "`[Verifiziert]`" if si.get("confidence", "verified") == "verified" else "`[Heuristik / Verdacht]`"
         p1_rows.append(
-            f"| F{len(p1_rows) + 1} | `{si['file']}:{si['line']}` | Security `{si['kind']}`: {si['message']} | Sichere Alternative verwenden oder Secret entfernen |"
+            f"| F{len(p1_rows) + 1} | `{si['file']}:{si['line']}` | `{si['snippet']}` | Security `{si['kind']}` (`SV-P1-05/06`): {si['message']} | {conf_label} | Sichere Alternative verwenden oder Secret entfernen | `skill_audit.py --fail-on p1` |"
         )
     if p1_rows:
         lines.extend(p1_rows)
     else:
-        lines.append("| F1 | `<datei>#L<z>` | <verifizierter Befund> | <konkrete Korrektur> |")
+        lines.append("| F1 | `<datei>#L<z>` | `<exaktes Snippet>` | <Problem & Auswirkung> | `[Verifiziert]` | <konkrete Korrektur> | `skill_audit.py --fail-on p1` |")
 
     lines.extend(["", "## 🟠 Priorität 2: Ausführbarkeit, Links, Orphans & Formatierung"])
     for bl in report["broken_links"]:
-        lines.append(f"- Defekter Link: `{bl['file']}:{bl['line']}` → `{bl['link']}` ({bl['reason']})")
+        lines.append(f"- Defekter Link (`[Verifiziert]`): `{bl['file']}:{bl['line']}` → `{bl['link']}` ({bl['reason']})")
     if s["unclosed_code_blocks"]:
-        lines.append(f"- Ungeschlossene Codeblöcke: {', '.join(f'`{f}`' for f in s['unclosed_code_blocks'])}")
+        lines.append(f"- Ungeschlossene Codeblöcke (`[Verifiziert]`): {', '.join(f'`{f}`' for f in s['unclosed_code_blocks'])}")
     for mi in report["mermaid_issues"]:
-        lines.append(f"- Mermaid-Lint `{mi['file']}:{mi['line']}` [{mi['kind']}]: {mi['snippet']}")
+        lines.append(f"- Mermaid-Lint (`[Verifiziert]`) `{mi['file']}:{mi['line']}` [{mi['kind']}]: {mi['snippet']}")
     for fi in report["format_issues"][:15]:
-        lines.append(f"- Format-Lint `{fi['file']}:{fi['line']}` [{fi['kind']}]: `{fi['snippet']}`")
+        lines.append(f"- Format-Lint (`[Verifiziert]`) `{fi['file']}:{fi['line']}` [{fi['kind']}]: `{fi['snippet']}`")
     if report["dead_local_references"]:
         refs = ", ".join(f"`{d['reference']}`" for d in report["dead_local_references"])
-        lines.append(f"- Tote lokale Verweise: {refs}")
+        lines.append(f"- Tote lokale Verweise (`[Verifiziert]`): {refs}")
     for of in report.get("orphan_files", []):
-        lines.append(f"- Verwaiste Datei (Orphan): `{of['file']}`")
+        lines.append(f"- Verwaiste Datei (Orphan, `[Verifiziert]`): `{of['file']}`")
     for spi in [x for x in report.get("spec_issues", []) if x.get("severity") == "p2"]:
-        lines.append(f"- `agentskills.io`-Spec [{spi['kind']}]: {spi['message']}")
+        lines.append(f"- `agentskills.io`-Spec (`[Verifiziert]`) [{spi['kind']}]: {spi['message']}")
     for ui in [x for x in report.get("unicode_smuggling_issues", []) if x.get("severity") == "p2"]:
-        lines.append(f"- Unsichtbares Unicode-Zeichen `{ui['file']}:{ui['line']}`: {ui['codepoint']} ({ui['name']})")
+        lines.append(f"- Unsichtbares Unicode-Zeichen (`[Verifiziert]`) `{ui['file']}:{ui['line']}`: {ui['codepoint']} ({ui['name']})")
     for si in [x for x in report.get("script_security_issues", []) if x.get("severity") == "p2"]:
-        lines.append(f"- Skript-Deserialisierung `{si['file']}:{si['line']}`: {si['message']}")
+        lines.append(f"- P2-Security-Befund (`[Verifiziert]`) `{si['file']}:{si['line']}` [{si['kind']}]: {si['message']}")
     for fni in report["frontmatter_file_names_issues"]:
-        lines.append(f"- Frontmatter `file_names`: {fni}")
+        lines.append(f"- Frontmatter `file_names` (`[Verifiziert]`): {fni}")
     if report["junk_files"]:
-        lines.append(f"- Bytecode/Junk im Ordner: {', '.join(f'`{j}`' for j in report['junk_files'][:10])}")
+        lines.append(f"- Bytecode/Junk im Ordner (`[Verifiziert]`): {', '.join(f'`{j}`' for j in report['junk_files'][:10])}")
     if not (
         report["broken_links"]
         or s["unclosed_code_blocks"]
@@ -1352,7 +1403,10 @@ def render_report_draft(report: dict[str, object]) -> str:
         ]
     )
     for pui in report.get("purpose_issues", []):
-        lines.append(f"- Zweck-/Architektur-Hinweis (`SV-P3-09` / {pui['kind']}): {pui['message']}")
+        conf_label = "`[Verifiziert]`" if pui.get("confidence", "verified") == "verified" else "`[Heuristik / Verdacht]`"
+        lines.append(f"- Zweck-/Architektur-Hinweis (`SV-P3-09` / {pui['kind']} / {conf_label}): {pui['message']}")
+    for ci in report.get("consistency_issues", []):
+        lines.append(f"- Versions-/Regel-Konsistenz (`SV-P3-10` / {ci.get('kind', 'consistency')} / `[Verifiziert]`): {ci['message']}")
     for bw in report["budget_warnings"]:
         lines.append(f"- Budget-Hinweis: {bw}")
     for ph in [x for x in report["portability_and_sandbox_issues"] if x["kind"] == "hardcoded-platform-path"]:
@@ -1552,18 +1606,21 @@ def run_self_test() -> int:
         orphan_paths = {o["file"] for o in rep["orphan_files"]}
         assert "references/copy.md" in orphan_paths, f"v1.4 Orphan Regression: {rep['orphan_files']}"
 
-        # F4 + v1.4.1: report draft includes Zweck-vor-Architektur gate before Bestandsaufnahme & all sections
+        # F4 + v1.4.1 + v1.5: report draft includes Zweck-vor-Architektur gate, evidence columns, confidence tags & scan coverage
         draft = render_report_draft(rep)
         assert "## Zweck, Scope & Ziel-Domäne" in draft
         assert draft.index("## Zweck, Scope & Ziel-Domäne") < draft.index("## Bestandsaufnahme")
         assert "| Datei | Zeichen | ≈ Tokens | Zeilen | TOC |" in draft
+        assert "Security-Scan-Coverage:" in draft
+        assert "`[Verifiziert]`" in draft
+        assert "| # | Fundstelle (`Datei:Zeile`) | Konkreter Nachweis (Evidenz/Snippet) |" in draft
         assert "Ungeschlossene Codeblöcke" in draft
         assert "Mermaid-Lint" in draft
         assert "Sandbox-Anti-Pattern" in draft
         assert "Duplikat-Verdacht" in draft
         assert "```mermaid" in draft
 
-    # v1.4 / v1.4.1 End-to-End Integrationstest (Security, Spec, Contamination, Workflow, Evals-Quality, Purpose, SARIF)
+    # v1.4 / v1.5 End-to-End Integrationstest (Security, Spec, Contamination, Workflow, Evals-Quality, Purpose, Consistency, SARIF)
     with tempfile.TemporaryDirectory() as tmp2:
         root2 = pathlib.Path(tmp2)
         bidi_char = chr(0x202E)
@@ -1571,12 +1628,14 @@ def run_self_test() -> int:
         (root2 / "SKILL.md").write_text(
             "---\n"
             "name: Bad--Name\n"
-            "description: Test skill for integration checks across security, spec, quality and workflow rules. Use when testing v1.4 rules.\n"
+            "version: 1.0-TEST\n"
+            "description: Test skill for integration checks across security, spec, quality and workflow rules. Use when testing v1.5 rules. Don't use for inorganic materials synthesis.\n"
             "custom_extra: true\n"
             "---\n"
             "# Bad Skill\n\n"
             "## Installation\n\n"
             "Run `scripts/tool.py`.\n\n"
+            "## Inorganic Materials Synthesis Workflow\n\n"
             "### Step 1\nDo A.\n\n"
             "### Step 2\nDo B.\n\n"
             "### Step 3\nDo C.\n\n"
@@ -1589,7 +1648,7 @@ def run_self_test() -> int:
         (root2 / "scripts").mkdir()
         (root2 / "scripts" / "tool.py").write_text(
             "import subprocess\n"
-            "x = " + "ev" + "al('1+1')\n"
+            "x = " + "ev" + "al('1+1')  #" + " audit-ok\n"
             "subprocess.run('ls', shell=True)\n"
             "tok = '" + "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'\n",
             encoding="utf-8",
@@ -1600,6 +1659,7 @@ def run_self_test() -> int:
             json.dumps(
                 {
                     "skill_name": "Bad--Name",
+                    "version": "9.9-MISMATCH",
                     "cases": [
                         {
                             "id": "e1",
@@ -1627,8 +1687,10 @@ def run_self_test() -> int:
 
         rep2 = audit_directory(root2)
         s2 = rep2["summary"]
-        assert s2["unicode_smuggling_issue_count"] >= 2, f"v1.4 Unicode E2E failed: {rep2['unicode_smuggling_issues']}"
-        assert s2["script_security_issue_count"] >= 3, f"v1.4 Security E2E failed: {rep2['script_security_issues']}"
+        assert s2["unicode_smuggling_issue_count"] >= 2, f"v1.5 Unicode E2E failed: {rep2['unicode_smuggling_issues']}"
+        assert s2["script_security_issue_count"] >= 4, f"v1.5 Security E2E failed: {rep2['script_security_issues']}"
+        assert any(si["kind"] == "unjustified-audit-ok" for si in rep2["script_security_issues"]), rep2["script_security_issues"]
+        assert s2["security_scanned_files"] >= 3, rep2["security_coverage"]
         assert any(o["file"] == "scripts/unused_helper.py" for o in rep2["orphan_files"]), rep2["orphan_files"]
         assert any(sp["kind"] == "spec-invalid-name" for sp in rep2["spec_issues"]), rep2["spec_issues"]
         assert s2["contamination_flagged"] is True, rep2["contamination"]
@@ -1636,15 +1698,17 @@ def run_self_test() -> int:
         assert "readme-tier-in-skill" in pw_kinds and "workflow-missing-verification" in pw_kinds, pw_kinds
         eq_kinds = {x["kind"] for x in rep2["evals_quality_issues"]}
         assert "eval-no-negative-case" in eq_kinds and "eval-prompt-leakage" in eq_kinds, eq_kinds
-        assert s2["purpose_issue_count"] >= 1, f"v1.4.1 Purpose E2E failed: {rep2['purpose']}"
-        assert any(pi["kind"] == "purpose-missing-negative-boundary" for pi in rep2["purpose_issues"]), rep2["purpose_issues"]
+        assert s2["purpose_issue_count"] >= 1, f"v1.5 Purpose E2E failed: {rep2['purpose']}"
+        assert any(pi["kind"] == "purpose-trigger-contradiction" for pi in rep2["purpose_issues"]), rep2["purpose_issues"]
+        assert s2["consistency_issue_count"] >= 1, f"v1.5 Consistency E2E failed: {rep2['consistency_issues']}"
 
         # Fail-on P1/P2/P3 & SARIF 2.1.0
         assert len(evaluate_fail_on(rep2, "p1")) >= 2
-        assert len(evaluate_fail_on(rep2, "p2")) >= 5
-        assert len(evaluate_fail_on(rep2, "p3")) >= 9
-        sarif = audit_sarif.render_sarif(rep2, tool_version="1.4.1-DE")
+        assert len(evaluate_fail_on(rep2, "p2")) >= 6
+        assert len(evaluate_fail_on(rep2, "p3")) >= 10
+        sarif = audit_sarif.render_sarif(rep2, tool_version=audit_sarif.TOOL_VERSION)
         assert sarif["version"] == "2.1.0"
+        assert sarif["runs"][0]["tool"]["driver"]["version"] == audit_sarif.TOOL_VERSION
         rule_ids = {r["ruleId"] for r in sarif["runs"][0]["results"]}
         for expected_rid in (
             "SV-P1-04",
@@ -1652,21 +1716,26 @@ def run_self_test() -> int:
             "SV-P1-06",
             "SV-P2-03",
             "SV-P2-09",
+            "SV-P2-11",
             "SV-P3-06",
             "SV-P3-07",
             "SV-P3-08",
             "SV-P3-09",
+            "SV-P3-10",
         ):
             assert expected_rid in rule_ids, f"SARIF missing {expected_rid}: {rule_ids}"
 
-    print("OK: skill_audit.py Selbsttest (alle 38+ Regressionstests v1.3–v1.4.1 inkl. Security, Orphans, Spec, Purpose, SARIF) bestanden.")
+    print(
+        f"OK: skill_audit.py Selbsttest (alle 42+ Regressionstests v1.3–{audit_sarif.TOOL_VERSION} "
+        "inkl. Security, Orphans, Spec, Claim/Contradiction, SSOT-Konsistenz & SARIF) bestanden."
+    )
     return 0
 
 
 def render_rules_table() -> str:
-    """Gibt alle stabilen Regel-IDs (SV-P1-01 … SV-P3-09) als Markdown-Tabelle aus."""
+    """Gibt alle stabilen Regel-IDs (SV-P1-01 … SV-P3-10) als Markdown-Tabelle aus."""
     lines = [
-        "# Stabile Audit-Regeln (`skill-verbesserungsanalyse` v1.4.1-DE)",
+        f"# Stabile Audit-Regeln (`skill-verbesserungsanalyse` v{audit_sarif.TOOL_VERSION})",
         "",
         "| Regel-ID | Prio | SARIF-Level | Kategorie | Beschreibung |",
         "|---|:---:|:---:|---|---|",
@@ -1679,7 +1748,9 @@ def render_rules_table() -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Automatisiertes Audit fuer KI-Skills & Wissens-Repos (v1.4.1-DE)")
+    parser = argparse.ArgumentParser(
+        description=f"Automatisiertes Audit fuer KI-Skills & Wissens-Repos (v{audit_sarif.TOOL_VERSION})"
+    )
     parser.add_argument("target", nargs="?", default=".", help="Zielordner des Skills oder Repos")
     parser.add_argument("--json", action="store_true", help="Ausgabe als JSON statt Markdown (inkl. Regel-IDs)")
     parser.add_argument("--sarif", action="store_true", help="Ausgabe als SARIF 2.1.0 JSON (GitHub Code Scanning)")
@@ -1708,7 +1779,13 @@ def main() -> int:
 
     report = audit_directory(target_path, include_all_sections=args.sections)
     if args.sarif:
-        print(json.dumps(audit_sarif.render_sarif(report, tool_version="1.4.1-DE"), ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                audit_sarif.render_sarif(report, tool_version=audit_sarif.TOOL_VERSION),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     elif args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     elif args.report_draft:
